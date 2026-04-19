@@ -53,8 +53,12 @@ export interface ToolCallDisplayItem {
   /** Maps to SDK toolUseID so we can join with the result later. */
   toolUseId: string
   toolName: string
-  /** Pretty-printed JSON, ready to render verbatim. */
-  inputJson: string
+  /**
+   * Parsed input object as the tool received it. The renderer hands
+   * this to the per-tool formatter to produce a nice headline + details
+   * (see src/util/tool-format.ts). Fallback: stringify on the fly.
+   */
+  input: Record<string, unknown>
   /** Whether the result has arrived yet. */
   resolved: boolean
   createdAt: number

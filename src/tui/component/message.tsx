@@ -8,6 +8,7 @@ import { Show } from "solid-js"
 import { useTheme } from "../context/theme.tsx"
 import { useExpand } from "../context/expand.tsx"
 import { modeLabel } from "../../agent/modes.ts"
+import { displayToolName, fallbackInputJson, formatToolInput } from "../../util/tool-format.ts"
 import type {
   AssistantDisplayMessage,
   DisplayItem,
@@ -81,6 +82,11 @@ function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
   )
 }
 
+// Max characters of headline shown next to the tool name. Long inputs
+// (e.g. very long Bash commands) get truncated here and shown in full
+// when the user clicks to expand.
+const HEADLINE_MAX = 80
+
 function ToolCallBlock(props: { item: ToolCallDisplayItem }) {
   const theme = useTheme()
   const expand = useExpand()
@@ -89,6 +95,19 @@ function ToolCallBlock(props: { item: ToolCallDisplayItem }) {
   // visually in sync — clicking either side flips both.
   const onClick = () => expand.toggleOne(props.item.toolUseId)
   const isExpanded = () => expand.isExpanded(props.item.toolUseId)
+  // Per-tool formatter turns the parsed input into a headline + details.
+  // displayToolName strips the mcp__ prefix into a friendlier "server/tool".
+  const formatted = () => formatToolInput(props.item.toolName, props.item.input)
+  const niceName = () => displayToolName(props.item.toolName)
+  // Compose: "  ToolName · headline (truncated)"
+  const header = () => {
+    const head = formatted().headline
+    const headlinePart = head ? "  ·  " + truncateLine(head, HEADLINE_MAX) : ""
+    return "  " + niceName() + headlinePart + (props.item.resolved ? "" : " ...")
+  }
+  // Details to show when expanded. If the formatter didn't supply any
+  // (e.g. Read where the headline says it all), fall back to pretty JSON.
+  const expandedBody = () => formatted().details ?? fallbackInputJson(props.item.input)
   return (
     <box
       marginTop={1}
@@ -98,16 +117,20 @@ function ToolCallBlock(props: { item: ToolCallDisplayItem }) {
       border={["left"]}
       onMouseUp={onClick}
     >
-      <text fg={theme.tool}>
-        {"  "}
-        {props.item.toolName}
-        {props.item.resolved ? "" : " ..."}
-      </text>
-      <Show when={isExpanded()} fallback={<text fg={theme.toolMuted}>{summarize(props.item.inputJson)}</text>}>
-        <text fg={theme.toolMuted}>{props.item.inputJson}</text>
+      <text fg={theme.tool}>{header()}</text>
+      <Show when={isExpanded()}>
+        <text fg={theme.toolMuted}>{expandedBody()}</text>
       </Show>
     </box>
   )
+}
+
+function truncateLine(s: string, max: number): string {
+  // Take only the first line first (multi-line headlines look bad
+  // anchored next to the tool name), then ellipsize.
+  const firstLine = s.split("\n", 1)[0] ?? ""
+  if (firstLine.length <= max) return firstLine
+  return firstLine.slice(0, max - 1) + "…"
 }
 
 function ToolResultBlock(props: { item: ToolResultDisplayItem }) {
@@ -161,11 +184,6 @@ function ErrorNotice(props: { item: ErrorDisplayItem }) {
       <text fg={theme.text}>{props.item.text}</text>
     </box>
   )
-}
-
-function summarize(s: string): string {
-  const firstLine = s.split("\n", 1)[0] ?? ""
-  return firstLine.length > 80 ? firstLine.slice(0, 77) + "..." : firstLine
 }
 
 function prefix(p: string, body: string): string {

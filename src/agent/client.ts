@@ -287,7 +287,7 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
               id,
               toolUseId: block.id,
               toolName: block.name,
-              inputJson: safeStringify(block.input),
+              input: (block.input ?? {}) as Record<string, unknown>,
               resolved: false,
               createdAt: Date.now(),
             }

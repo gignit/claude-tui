@@ -186,7 +186,7 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
           id: nextId("tool"),
           toolUseId: String(block.id ?? ""),
           toolName: String(block.name ?? "tool"),
-          inputJson: safeStringify(block.input),
+          input: (block.input ?? {}) as Record<string, unknown>,
           // Marked resolved=true so we don't show the spinner for
           // historical tool calls.
           resolved: true,
