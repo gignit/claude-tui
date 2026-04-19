@@ -14,6 +14,16 @@ import { useTheme } from "../context/theme.tsx"
 import { DialogSelect, type DialogSelectOption } from "./dialog-select.tsx"
 import { listSessions, type SessionSummary } from "../../util/sessions.ts"
 
+// Max characters for the preview line shown as the row title. The dialog
+// box is ~80 wide minus 8 chars of padding/indentation, so 64 keeps the
+// title safely on one line in any terminal that fits the dialog at all.
+const PREVIEW_MAX = 64
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s
+  return s.slice(0, max - 1) + "…"
+}
+
 export function DialogSessionList() {
   const dialog = useDialog()
   const agent = useAgent()
@@ -24,7 +34,9 @@ export function DialogSessionList() {
     const list: SessionSummary[] = sessions() ?? []
     return list.map((s) => ({
       value: s.id,
-      title: s.preview || "(no preview)",
+      // Previews are first-user-message text and frequently very long.
+      // Hard-truncate so each row stays exactly one line.
+      title: truncate(s.preview || "(no preview)", PREVIEW_MAX),
       subtitle: shortId(s.id) + (s.firstAt ? "  " + relativeTime(s.firstAt) : ""),
       hint: s.id === agent.sessionId() ? "active" : "",
     }))

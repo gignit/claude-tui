@@ -84,6 +84,15 @@ export interface ErrorDisplayItem {
   createdAt: number
 }
 
+/** Lightweight slice of the SDK's getContextUsage() response that the
+ * status line cares about. Avoids exposing the full SDK shape. */
+export interface ContextUsage {
+  totalTokens: number
+  maxTokens: number
+  /** 0..100 from the SDK. */
+  percentage: number
+}
+
 /** High-level events the agent client emits to the TUI. */
 export type AgentEvent =
   | { type: "appended"; item: DisplayItem }
@@ -93,6 +102,7 @@ export type AgentEvent =
   | { type: "model"; model: string }
   | { type: "mode"; mode: import("./modes.ts").AgentMode }
   | { type: "session"; sessionId: string }
+  | { type: "context"; usage: ContextUsage }
 
 export type AgentStatus =
   | { kind: "idle" }

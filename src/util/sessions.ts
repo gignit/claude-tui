@@ -14,9 +14,10 @@
  */
 
 import { readdirSync, statSync } from "node:fs"
-import { open } from "node:fs/promises"
+import { open, readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import type { DisplayItem } from "../agent/types.ts"
 
 export interface SessionSummary {
   /** Session UUID (the .jsonl filename without extension). */
@@ -82,6 +83,162 @@ export async function listSessions(cwd: string, limit = 50): Promise<SessionSumm
     results.push({ id, preview, ...(firstAt ? { firstAt } : {}), mtimeMs, path })
   }
   return results
+}
+
+/**
+ * Parse a session JSONL file from disk into the DisplayItems we render
+ * in the scrollback. Used by `agent.resumeSession()` — the SDK doesn't
+ * echo prior turns through the live event stream when given `--resume`,
+ * it only loads them into the model's context. So we parse the on-disk
+ * transcript ourselves to populate the visual history.
+ *
+ * The on-disk format is one JSON object per line. Relevant types:
+ *
+ *   type:"user"              {message:{role,content}, timestamp, uuid, ...}
+ *   type:"assistant"         {message:{role,content[]}, timestamp, uuid, ...}
+ *   type:"queue-operation"   internal queueing housekeeping — skip
+ *   type:"attachment"        deferred-tool / context attachment — skip
+ *   type:"last-prompt"       checkpoint marker — skip
+ *
+ * Within user content, blocks of type:"tool_result" become tool_result
+ * DisplayItems (linked back to their tool_use by tool_use_id). Plain
+ * text content (string or text-block array) becomes a user bubble.
+ *
+ * Within assistant content, "text" blocks join into a single assistant
+ * bubble per turn; "tool_use" blocks become tool_call DisplayItems;
+ * "thinking" blocks are folded into the assistant bubble's `thinking`
+ * field. Each assistant turn (one assistant entry in the JSONL) is one
+ * bubble — we don't try to merge consecutive assistant entries.
+ */
+export async function readSessionHistory(cwd: string, sessionId: string): Promise<DisplayItem[]> {
+  const path = join(projectDirPath(cwd), `${sessionId}.jsonl`)
+  let text: string
+  try {
+    text = await readFile(path, "utf8")
+  } catch {
+    return []
+  }
+
+  const items: DisplayItem[] = []
+  let counter = 0
+  const nextId = (kind: string) => `replay-${kind}-${++counter}`
+
+  for (const raw of text.split("\n")) {
+    if (!raw.trim()) continue
+    let entry: any
+    try {
+      entry = JSON.parse(raw)
+    } catch {
+      continue
+    }
+    const type = entry?.type
+    if (type !== "user" && type !== "assistant") continue
+    const createdAt = parseTimestamp(entry?.timestamp) ?? Date.now()
+    const content = entry?.message?.content
+
+    if (type === "user") {
+      // 1. Tool results — surfaced as their own DisplayItem (linked by tool_use_id).
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block?.type === "tool_result") {
+            items.push({
+              kind: "tool_result",
+              id: nextId("res"),
+              toolUseId: String(block.tool_use_id ?? ""),
+              output: stringifyToolResult(block.content),
+              isError: !!block.is_error,
+              createdAt,
+            })
+          }
+        }
+      }
+      // 2. Plain user text — render as a user bubble.
+      const userText = extractUserText(content)
+      if (userText) {
+        items.push({
+          kind: "user",
+          id: nextId("user"),
+          text: userText,
+          createdAt,
+        })
+      }
+      continue
+    }
+
+    // type === "assistant"
+    if (!Array.isArray(content)) continue
+    let bubbleText = ""
+    let thinking = ""
+    const turnModel = typeof entry.message?.model === "string" ? entry.message.model : undefined
+    for (const block of content) {
+      if (block?.type === "text" && typeof block.text === "string") {
+        bubbleText += block.text
+      } else if (block?.type === "thinking" && typeof block.thinking === "string") {
+        thinking += (thinking ? "\n" : "") + block.thinking
+      } else if (block?.type === "tool_use") {
+        items.push({
+          kind: "tool_call",
+          id: nextId("tool"),
+          toolUseId: String(block.id ?? ""),
+          toolName: String(block.name ?? "tool"),
+          inputJson: safeStringify(block.input),
+          // Marked resolved=true so we don't show the spinner for
+          // historical tool calls.
+          resolved: true,
+          createdAt,
+        })
+      }
+    }
+    if (bubbleText || thinking) {
+      items.push({
+        kind: "assistant",
+        id: nextId("asst"),
+        text: bubbleText,
+        complete: true,
+        ...(thinking ? { thinking } : {}),
+        ...(turnModel ? { model: turnModel } : {}),
+        createdAt,
+      })
+    }
+  }
+
+  return items
+}
+
+function extractUserText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .filter((b: any) => b?.type === "text" && typeof b.text === "string")
+    .map((b: any) => b.text)
+    .join("")
+    .trim()
+}
+
+function parseTimestamp(t: unknown): number | undefined {
+  if (typeof t !== "string") return undefined
+  const ms = Date.parse(t)
+  return Number.isNaN(ms) ? undefined : ms
+}
+
+function safeStringify(v: unknown): string {
+  try {
+    return JSON.stringify(v, null, 2)
+  } catch {
+    return String(v)
+  }
+}
+
+function stringifyToolResult(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return safeStringify(content)
+  return content
+    .map((part: any) => {
+      if (part?.type === "text") return String(part.text ?? "")
+      if (part?.type === "image") return "[image]"
+      return safeStringify(part)
+    })
+    .join("\n")
 }
 
 /**

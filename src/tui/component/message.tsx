@@ -84,14 +84,26 @@ function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
 function ToolCallBlock(props: { item: ToolCallDisplayItem }) {
   const theme = useTheme()
   const expand = useExpand()
+  // Click handler flips this specific tool's per-tool override. Both
+  // the call and the result share the same `toolUseId` so they stay
+  // visually in sync — clicking either side flips both.
+  const onClick = () => expand.toggleOne(props.item.toolUseId)
+  const isExpanded = () => expand.isExpanded(props.item.toolUseId)
   return (
-    <box marginTop={1} flexShrink={0} paddingLeft={1} borderColor={theme.tool} border={["left"]}>
+    <box
+      marginTop={1}
+      flexShrink={0}
+      paddingLeft={1}
+      borderColor={theme.tool}
+      border={["left"]}
+      onMouseUp={onClick}
+    >
       <text fg={theme.tool}>
         {"  "}
         {props.item.toolName}
         {props.item.resolved ? "" : " ..."}
       </text>
-      <Show when={expand.expanded()} fallback={<text fg={theme.toolMuted}>{summarize(props.item.inputJson)}</text>}>
+      <Show when={isExpanded()} fallback={<text fg={theme.toolMuted}>{summarize(props.item.inputJson)}</text>}>
         <text fg={theme.toolMuted}>{props.item.inputJson}</text>
       </Show>
     </box>
@@ -103,15 +115,25 @@ function ToolResultBlock(props: { item: ToolResultDisplayItem }) {
   const expand = useExpand()
   const lines = () => props.item.output.split("\n")
   const overflow = () => Math.max(0, lines().length - COLLAPSED_LINE_LIMIT)
+  // Same per-tool toggle as ToolCallBlock — keyed on toolUseId so both
+  // halves of the same tool invocation expand/collapse together.
+  const onClick = () => expand.toggleOne(props.item.toolUseId)
+  const isExpanded = () => expand.isExpanded(props.item.toolUseId)
   return (
-    <box flexShrink={0} paddingLeft={3} borderColor={theme.toolMuted} border={["left"]}>
+    <box
+      flexShrink={0}
+      paddingLeft={3}
+      borderColor={theme.toolMuted}
+      border={["left"]}
+      onMouseUp={onClick}
+    >
       <Show
-        when={expand.expanded()}
+        when={isExpanded()}
         fallback={
           <>
             <text fg={theme.textMuted}>{lines().slice(0, COLLAPSED_LINE_LIMIT).join("\n")}</text>
             <Show when={overflow() > 0}>
-              <text fg={theme.textDim}>{`+${overflow()} lines (Ctrl+O to expand)`}</text>
+              <text fg={theme.textDim}>{`+${overflow()} more — click to expand`}</text>
             </Show>
           </>
         }

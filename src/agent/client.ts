@@ -331,6 +331,10 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
           currentAssistantId = null
         }
         emit({ type: "status", status: { kind: "idle" } })
+        // Refresh context usage after every turn ends — that's when it
+        // could have changed (new prompt + assistant text + tool calls).
+        // Fire and forget; the response posts a context event.
+        void refreshContextUsage()
         break
       }
 
@@ -351,6 +355,9 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
             emit({ type: "mode", mode: currentMode })
           }
           if (m.session_id) emit({ type: "session", sessionId: m.session_id })
+          // Initial context-usage fetch — gives the status bar a number
+          // to show before the first user turn.
+          void refreshContextUsage()
         }
         break
       }
@@ -364,6 +371,35 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
       default:
         // Unknown / new SDK event type — ignore quietly.
         break
+    }
+  }
+
+  /**
+   * Pull the latest context usage from the SDK and emit a 'context'
+   * event. Called after each result and after model/mode changes; no-op
+   * if the SDK isn't ready yet (e.g. before the init message arrived).
+   */
+  async function refreshContextUsage() {
+    try {
+      const usage = await q.getContextUsage()
+      emit({
+        type: "context",
+        usage: {
+          totalTokens: usage.totalTokens,
+          maxTokens: usage.maxTokens,
+          percentage: usage.percentage,
+        },
+      })
+      dlog("agent.context.refresh", {
+        total: usage.totalTokens,
+        max: usage.maxTokens,
+        pct: usage.percentage,
+      })
+    } catch (err) {
+      // Pre-init or transient SDK errors are normal; just log.
+      dlog("agent.context.refresh.error", {
+        message: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 
@@ -462,6 +498,8 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
         await q.setModel(model)
         // The SDK does not echo a fresh init after setModel, so emit ourselves.
         if (model) emit({ type: "model", model })
+        // Different model = different context window size; refresh.
+        void refreshContextUsage()
       } catch (err) {
         emit({
           type: "appended",

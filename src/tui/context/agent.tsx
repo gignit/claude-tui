@@ -15,9 +15,10 @@
 import { createContext, useContext, createSignal, onCleanup, type JSX } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { createAgentClient, type AgentClient, type AgentClientConfig } from "../../agent/client.ts"
-import type { AgentStatus, DisplayItem, PermissionRequest } from "../../agent/types.ts"
+import type { AgentStatus, ContextUsage, DisplayItem, PermissionRequest } from "../../agent/types.ts"
 import { type AgentMode, nextMode } from "../../agent/modes.ts"
 import { saveState } from "../../util/state-store.ts"
+import { readSessionHistory } from "../../util/sessions.ts"
 import { dlog } from "../../util/debug-log.ts"
 
 export interface AgentContextValue {
@@ -32,6 +33,8 @@ export interface AgentContextValue {
   sessionId: () => string | null
   /** Working directory the agent was started with — for session-list scoping. */
   cwd: () => string
+  /** Latest context-usage snapshot from the SDK; null until first refresh. */
+  contextUsage: () => ContextUsage | null
   submit: (text: string) => void
   interrupt: () => Promise<void>
   setModel: (model: string) => Promise<void>
@@ -59,6 +62,7 @@ export function AgentProvider(props: AgentProviderProps) {
   const [model, setModelSignal] = createSignal<string | null>(null)
   const [mode, setModeSignal] = createSignal<AgentMode>("default")
   const [sessionId, setSessionIdSignal] = createSignal<string | null>(null)
+  const [contextUsage, setContextUsageSignal] = createSignal<ContextUsage | null>(null)
 
   // Mutable reference: closed methods (submit/interrupt/setModel/etc.)
   // dereference via `client?.x()` at call time, so swapping the binding
@@ -73,6 +77,7 @@ export function AgentProvider(props: AgentProviderProps) {
     setStatus({ kind: "idle" })
     setPendingPermission(null)
     setSessionIdSignal(null)
+    setContextUsageSignal(null)
     // Keep model/mode signals as-is; they get overwritten by the next
     // init event anyway and showing "connecting…" briefly is fine.
 
@@ -115,6 +120,9 @@ export function AgentProvider(props: AgentProviderProps) {
           case "session":
             setSessionIdSignal(evt.sessionId)
             break
+          case "context":
+            setContextUsageSignal(evt.usage)
+            break
         }
       },
     }
@@ -138,6 +146,7 @@ export function AgentProvider(props: AgentProviderProps) {
     model,
     mode,
     sessionId,
+    contextUsage,
     cwd: () => props.config.cwd ?? process.cwd(),
     submit: (text) => client?.submitUserMessage(text),
     interrupt: async () => {
@@ -155,7 +164,29 @@ export function AgentProvider(props: AgentProviderProps) {
     },
     resumeSession: async (id) => {
       dlog("agent.resumeSession", { id })
+      // The SDK's --resume only loads the session into the model's
+      // context — it doesn't echo prior turns through the live event
+      // stream. So we read the on-disk JSONL transcript ourselves and
+      // populate the scrollback before swapping the client.
+      const cwd = props.config.cwd ?? process.cwd()
+      let history: DisplayItem[] = []
+      try {
+        history = await readSessionHistory(cwd, id)
+        dlog("agent.resumeSession.history", { count: history.length })
+      } catch (err) {
+        dlog("agent.resumeSession.history.error", {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
       startClient({ resume: id })
+      // startClient already cleared the items store; refill with the
+      // historical items we just parsed. The next live event from the
+      // resumed subprocess will append after these.
+      if (history.length > 0) {
+        setItems(produce((arr) => {
+          for (const item of history) arr.push(item)
+        }))
+      }
     },
     listModels: async () => (client ? client.listModels() : []),
     pushNotice: (text: string) => {
