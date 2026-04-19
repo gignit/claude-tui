@@ -21,7 +21,6 @@ import type {
   ErrorDisplayItem,
   SystemNoticeDisplayItem,
   ToolCallDisplayItem,
-  ToolResultDisplayItem,
   UserDisplayMessage,
 } from "../../agent/types.ts"
 
@@ -35,8 +34,6 @@ export function MessageView(props: { item: DisplayItem }) {
       return <AssistantBubble msg={props.item} />
     case "tool_call":
       return <ToolCallBlock item={props.item} />
-    case "tool_result":
-      return <ToolResultBlock item={props.item} />
     case "system":
       return <SystemNotice item={props.item} />
     case "error":
@@ -93,16 +90,25 @@ function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
 // when the user clicks to expand.
 const HEADLINE_MAX = 80
 
+/**
+ * Render order inside the tool block (top to bottom):
+ *
+ *   1. Tool header line — `Edit · auth/context_test.go`
+ *   2. Tool result      — first 3 lines collapsed, full when expanded.
+ *                          Stays here regardless of expansion state, so
+ *                          "The file ... has been updated successfully."
+ *                          remains anchored just below the header.
+ *   3. Expanded extras  — JSON body + rich previews (diff, code, etc.).
+ *                          Only when expanded.
+ *
+ * Click anywhere in the block to toggle expansion for this specific
+ * tool (per-tool override on top of the global Ctrl+O state).
+ */
 function ToolCallBlock(props: { item: ToolCallDisplayItem }) {
   const theme = useTheme()
   const expand = useExpand()
-  // Click handler flips this specific tool's per-tool override. Both
-  // the call and the result share the same `toolUseId` so they stay
-  // visually in sync — clicking either side flips both.
   const onClick = () => expand.toggleOne(props.item.toolUseId)
   const isExpanded = () => expand.isExpanded(props.item.toolUseId)
-  // Per-tool formatter: returns a headline + zero-or-more rich previews.
-  // displayToolName strips the mcp__ prefix into a friendlier "server/tool".
   const formatted = createMemo(() => formatToolInput(props.item.toolName, props.item.input))
   const niceName = () => displayToolName(props.item.toolName)
   const header = () => {
@@ -110,13 +116,16 @@ function ToolCallBlock(props: { item: ToolCallDisplayItem }) {
     const headlinePart = head ? "  ·  " + truncateLine(head, HEADLINE_MAX) : ""
     return "  " + niceName() + headlinePart + (props.item.resolved ? "" : " ...")
   }
-  // Keys consumed by previews are excluded from the JSON view (the
-  // preview re-renders them in a richer way).
   const previews = () => formatted().previews ?? []
-  const consumedAttrs = createMemo(
-    () => new Set(previews().flatMap((p) => p.attrs)),
-  )
+  const consumedAttrs = createMemo(() => new Set(previews().flatMap((p) => p.attrs)))
   const jsonBody = () => jsonExcluding(props.item.input, consumedAttrs())
+
+  // Result-text rendering — collapsed = first N lines + overflow hint;
+  // expanded = full output.
+  const result = () => props.item.result
+  const resultLines = () => (result()?.output ?? "").split("\n")
+  const resultOverflow = () => Math.max(0, resultLines().length - COLLAPSED_LINE_LIMIT)
+
   return (
     <box
       marginTop={1}
@@ -127,11 +136,34 @@ function ToolCallBlock(props: { item: ToolCallDisplayItem }) {
       onMouseUp={onClick}
     >
       <text fg={theme.tool}>{header()}</text>
+
+      {/* Result block (always rendered, between header and extras) */}
+      <Show when={result()}>
+        {(r) => (
+          <box flexShrink={0} paddingLeft={2}>
+            <Show
+              when={isExpanded()}
+              fallback={
+                <>
+                  <text fg={r().isError ? theme.error : theme.textMuted}>
+                    {resultLines().slice(0, COLLAPSED_LINE_LIMIT).join("\n")}
+                  </text>
+                  <Show when={resultOverflow() > 0}>
+                    <text fg={theme.textDim}>{`+${resultOverflow()} more — click to expand`}</text>
+                  </Show>
+                </>
+              }
+            >
+              <text fg={r().isError ? theme.error : theme.textMuted}>{r().output}</text>
+            </Show>
+          </box>
+        )}
+      </Show>
+
+      {/* Expanded extras: JSON of inputs (minus consumed) + previews */}
       <Show when={isExpanded()}>
-        <box flexDirection="column" gap={1}>
-          {/* Always show the JSON of the input, minus consumed keys. */}
+        <box flexDirection="column" gap={1} paddingTop={1}>
           <text fg={theme.toolMuted}>{jsonBody()}</text>
-          {/* Then render each rich preview for the consumed keys. */}
           <For each={previews()}>{(p) => <ToolPreview preview={p} />}</For>
         </box>
       </Show>
@@ -154,6 +186,18 @@ function ToolPreview(props: { preview: RichPreview }) {
   const p = props.preview
   if (p.kind === "diff") {
     const lines = lineDiff(p.before, p.after)
+    // Auto-size each line-number column to the widest entry. Floor at
+    // 3 chars (most edits stay short; "  1" reads better than "1").
+    let maxOld = 0
+    let maxNew = 0
+    for (const line of lines) {
+      if (line.oldNo !== undefined && line.oldNo > maxOld) maxOld = line.oldNo
+      if (line.newNo !== undefined && line.newNo > maxNew) maxNew = line.newNo
+    }
+    const oldW = Math.max(3, String(maxOld).length)
+    const newW = Math.max(3, String(maxNew).length)
+    const fmtNum = (n: number | undefined, w: number) =>
+      n === undefined ? " ".repeat(w) : String(n).padStart(w, " ")
     return (
       <box flexDirection="column" flexShrink={0}>
         <Show when={p.label}>
@@ -161,9 +205,15 @@ function ToolPreview(props: { preview: RichPreview }) {
         </Show>
         <For each={lines}>
           {(line) => {
-            if (line.kind === "removed") return <text fg={theme.error}>{"- " + line.text}</text>
-            if (line.kind === "added") return <text fg={theme.success}>{"+ " + line.text}</text>
-            return <text fg={theme.textDim}>{"  " + line.text}</text>
+            const sigil = line.kind === "added" ? "+" : line.kind === "removed" ? "-" : " "
+            const gutter = `${fmtNum(line.oldNo, oldW)} ${fmtNum(line.newNo, newW)} ${sigil} `
+            const fg =
+              line.kind === "removed"
+                ? theme.error
+                : line.kind === "added"
+                  ? theme.success
+                  : theme.textDim
+            return <text fg={fg}>{gutter + line.text}</text>
           }}
         </For>
       </box>
@@ -190,39 +240,6 @@ function truncateLine(s: string, max: number): string {
   return firstLine.slice(0, max - 1) + "…"
 }
 
-function ToolResultBlock(props: { item: ToolResultDisplayItem }) {
-  const theme = useTheme()
-  const expand = useExpand()
-  const lines = () => props.item.output.split("\n")
-  const overflow = () => Math.max(0, lines().length - COLLAPSED_LINE_LIMIT)
-  // Same per-tool toggle as ToolCallBlock — keyed on toolUseId so both
-  // halves of the same tool invocation expand/collapse together.
-  const onClick = () => expand.toggleOne(props.item.toolUseId)
-  const isExpanded = () => expand.isExpanded(props.item.toolUseId)
-  return (
-    <box
-      flexShrink={0}
-      paddingLeft={3}
-      borderColor={theme.toolMuted}
-      border={["left"]}
-      onMouseUp={onClick}
-    >
-      <Show
-        when={isExpanded()}
-        fallback={
-          <>
-            <text fg={theme.textMuted}>{lines().slice(0, COLLAPSED_LINE_LIMIT).join("\n")}</text>
-            <Show when={overflow() > 0}>
-              <text fg={theme.textDim}>{`+${overflow()} more — click to expand`}</text>
-            </Show>
-          </>
-        }
-      >
-        <text fg={props.item.isError ? theme.error : theme.textMuted}>{props.item.output}</text>
-      </Show>
-    </box>
-  )
-}
 
 function SystemNotice(props: { item: SystemNoticeDisplayItem }) {
   const theme = useTheme()

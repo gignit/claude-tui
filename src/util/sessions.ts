@@ -17,7 +17,7 @@ import { readdirSync, statSync } from "node:fs"
 import { open, readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import type { DisplayItem } from "../agent/types.ts"
+import type { DisplayItem, ToolCallDisplayItem } from "../agent/types.ts"
 import { stripAnsi } from "./ansi.ts"
 
 export interface SessionSummary {
@@ -123,6 +123,10 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
   const items: DisplayItem[] = []
   let counter = 0
   const nextId = (kind: string) => `replay-${kind}-${++counter}`
+  // Track tool_call items by their toolUseId so we can attach tool_result
+  // bodies onto them as we encounter them later in the JSONL — matching
+  // the live SDK behavior in src/agent/client.ts.
+  const callsByUseId = new Map<string, ToolCallDisplayItem>()
 
   for (const raw of text.split("\n")) {
     if (!raw.trim()) continue
@@ -138,22 +142,24 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
     const content = entry?.message?.content
 
     if (type === "user") {
-      // 1. Tool results — surfaced as their own DisplayItem (linked by tool_use_id).
+      // 1. Tool results — attach to the matching tool_call we
+      //    previously emitted. If we never saw the call (orphan),
+      //    drop the result quietly.
       if (Array.isArray(content)) {
         for (const block of content) {
           if (block?.type === "tool_result") {
-            items.push({
-              kind: "tool_result",
-              id: nextId("res"),
-              toolUseId: String(block.tool_use_id ?? ""),
-              // Strip ANSI: tool output captured during the original
-              // session may contain SGR color codes (e.g. /context's
-              // 256-color gradient). opentui's text renderer mangles
-              // those into visible parameter digits.
-              output: stripAnsi(stringifyToolResult(block.content)),
-              isError: !!block.is_error,
-              createdAt,
-            })
+            const useId = String(block.tool_use_id ?? "")
+            const call = callsByUseId.get(useId)
+            if (call) {
+              call.result = {
+                // Strip ANSI: tool output captured during the original
+                // session may contain SGR color codes (e.g. /context's
+                // 256-color gradient). opentui's text renderer mangles
+                // those into visible parameter digits.
+                output: stripAnsi(stringifyToolResult(block.content)),
+                isError: !!block.is_error,
+              }
+            }
           }
         }
       }
@@ -181,7 +187,7 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
       } else if (block?.type === "thinking" && typeof block.thinking === "string") {
         thinking += (thinking ? "\n" : "") + block.thinking
       } else if (block?.type === "tool_use") {
-        items.push({
+        const call: ToolCallDisplayItem = {
           kind: "tool_call",
           id: nextId("tool"),
           toolUseId: String(block.id ?? ""),
@@ -191,7 +197,9 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
           // historical tool calls.
           resolved: true,
           createdAt,
-        })
+        }
+        items.push(call)
+        callsByUseId.set(call.toolUseId, call)
       }
     }
     if (bubbleText || thinking) {

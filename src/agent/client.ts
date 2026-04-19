@@ -299,30 +299,35 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
       }
 
       case "user": {
-        // The SDK echoes user-side tool_result blocks back through `user` messages.
-        // We intercept those here; the original user text we already rendered
-        // optimistically in submitUserMessage().
+        // The SDK echoes user-side tool_result blocks back through `user`
+        // messages. We attach each result to its matching tool_call
+        // DisplayItem (via the toolUseId map) instead of emitting a
+        // separate result item — keeps the call+result visually paired
+        // even when multiple parallel tools interleave on the wire.
         const content = msg.message.content
         if (typeof content === "string") return
         for (const block of content) {
           if (block.type === "tool_result") {
             const callId = toolCallByUseId.get(block.tool_use_id)
-            if (callId) {
-              emit({ type: "updated", id: callId, patch: { resolved: true } as Partial<DisplayItem> })
-            }
-            const item: DisplayItem = {
-              kind: "tool_result",
-              id: nextDisplayId("res"),
-              toolUseId: block.tool_use_id,
+            const result = {
               // Strip ANSI: tool output frequently contains SGR color
               // codes (e.g. ripgrep's --color=auto, /context output's
               // 256-color gradient) that opentui's text renderer eats
               // partially, leaving garbled parameter digits as text.
               output: stripAnsi(stringifyToolResult(block.content)),
               isError: !!block.is_error,
-              createdAt: Date.now(),
             }
-            emit({ type: "appended", item })
+            if (callId) {
+              emit({
+                type: "updated",
+                id: callId,
+                patch: { resolved: true, result } as Partial<DisplayItem>,
+              })
+            }
+            // If we never saw the matching call (orphan result, very
+            // rare — e.g. a result for a call from a prior session that
+            // didn't get replayed), drop it silently. Surfacing as a
+            // floating system notice was more confusing than useful.
           }
         }
         break

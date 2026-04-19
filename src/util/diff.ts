@@ -17,6 +17,17 @@ export interface DiffLine {
   kind: DiffLineKind
   /** The line text, NOT including the trailing newline. */
   text: string
+  /**
+   * Side-specific line numbers, both 1-indexed:
+   *   - removed lines: only `oldNo` is set (no equivalent on the new side)
+   *   - added lines:   only `newNo` is set
+   *   - unchanged:     both set (same logical line, different position)
+   *
+   * The renderer uses these for the gutter, in the same convention as
+   * `git diff` shown in side-by-side mode.
+   */
+  oldNo?: number
+  newNo?: number
 }
 
 /**
@@ -46,27 +57,32 @@ export function lineDiff(oldText: string, newText: string): DiffLine[] {
   }
 
   // Backtrack from (m, n) to (0, 0), prepending lines to the result.
+  // The line numbers we emit are the original positions on each side
+  // (1-indexed) — `i` and `j` are 1-based when we record the line that
+  // ends at that position.
   const result: DiffLine[] = []
   let i = m
   let j = n
   while (i > 0 && j > 0) {
     if (a[i - 1] === b[j - 1]) {
-      result.unshift({ kind: "unchanged", text: a[i - 1]! })
+      result.unshift({ kind: "unchanged", text: a[i - 1]!, oldNo: i, newNo: j })
       i--
       j--
     } else if ((dp[i - 1]![j] ?? 0) >= (dp[i]![j - 1] ?? 0)) {
-      result.unshift({ kind: "removed", text: a[i - 1]! })
+      result.unshift({ kind: "removed", text: a[i - 1]!, oldNo: i })
       i--
     } else {
-      result.unshift({ kind: "added", text: b[j - 1]! })
+      result.unshift({ kind: "added", text: b[j - 1]!, newNo: j })
       j--
     }
   }
   while (i > 0) {
-    result.unshift({ kind: "removed", text: a[--i]! })
+    result.unshift({ kind: "removed", text: a[i - 1]!, oldNo: i })
+    i--
   }
   while (j > 0) {
-    result.unshift({ kind: "added", text: b[--j]! })
+    result.unshift({ kind: "added", text: b[j - 1]!, newNo: j })
+    j--
   }
   return result
 }

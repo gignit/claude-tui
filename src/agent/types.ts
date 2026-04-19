@@ -10,7 +10,6 @@ export type DisplayItem =
   | UserDisplayMessage
   | AssistantDisplayMessage
   | ToolCallDisplayItem
-  | ToolResultDisplayItem
   | SystemNoticeDisplayItem
   | ErrorDisplayItem
 
@@ -61,16 +60,13 @@ export interface ToolCallDisplayItem {
   input: Record<string, unknown>
   /** Whether the result has arrived yet. */
   resolved: boolean
-  createdAt: number
-}
-
-export interface ToolResultDisplayItem {
-  kind: "tool_result"
-  id: DisplayMessageId
-  toolUseId: string
-  /** Already-stringified output. May be very long. */
-  output: string
-  isError: boolean
+  /**
+   * Result text + error flag, populated when the tool's matching
+   * tool_result block arrives (live SDK or JSONL replay). The result is
+   * rendered inline beneath the call header so the visual pair stays
+   * together — even when multiple parallel tools interleave on the wire.
+   */
+  result?: { output: string; isError: boolean }
   createdAt: number
 }
 
