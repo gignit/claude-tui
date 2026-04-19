@@ -53,10 +53,13 @@ function buildSpecs(deps: BuiltinDeps): CommandSpec[] {
         agent.pushNotice(
           [
             "claude-tui local commands:",
-            "  /help            this message",
-            "  /models          pick a model",
-            "  /sessions        switch sessions for the current project",
-            "  /menu            open the command menu (also Ctrl+K)",
+            "  /help                    this message",
+            "  /models                  pick a model",
+            "  /sessions                switch sessions for the current project",
+            "  /menu                    open the command menu (also Ctrl+K)",
+            "  /scroll <n>              set mouse-wheel scroll speed",
+            "  /markdown [on|off]       toggle markdown rendering of assistant text",
+            "  /markdown-stream [on|off]  render markdown live (on) or only when complete (off)",
             "Anything else starting with / is forwarded to claude.",
           ].join("\n"),
         )
@@ -124,5 +127,46 @@ function buildSpecs(deps: BuiltinDeps): CommandSpec[] {
         dialog.clear()
       },
     },
+    {
+      value: "settings.markdown",
+      title: "Toggle markdown rendering",
+      description: "Render assistant text as formatted markdown (headings, lists, tables, code). Persists.",
+      category: "Settings",
+      slash: { name: "markdown", aliases: ["md"] },
+      onSelect: (args) => {
+        const next = parseToggleArg(args, settings.markdown())
+        settings.setMarkdown(next)
+        agent.pushNotice(`/markdown: ${next ? "on" : "off"} (saved)`)
+        dialog.clear()
+      },
+    },
+    {
+      value: "settings.markdown_streaming",
+      title: "Toggle markdown streaming",
+      description: "When markdown is on: render incrementally while text streams (true) or wait until complete (false). Persists.",
+      category: "Settings",
+      slash: { name: "markdown-stream", aliases: ["md-stream", "mdstream"] },
+      onSelect: (args) => {
+        const next = parseToggleArg(args, settings.markdownStreaming())
+        settings.setMarkdownStreaming(next)
+        agent.pushNotice(
+          `/markdown-stream: ${next ? "on (live)" : "off (rendered after complete)"} (saved)`,
+        )
+        dialog.clear()
+      },
+    },
   ]
+}
+
+/**
+ * Resolve a toggle command's argument:
+ *   - "on" / "true" / "1" / "yes" → true
+ *   - "off" / "false" / "0" / "no" → false
+ *   - empty / unrecognized → flip current value
+ */
+function parseToggleArg(args: string | undefined, current: boolean): boolean {
+  const v = (args ?? "").trim().toLowerCase()
+  if (v === "on" || v === "true" || v === "1" || v === "yes") return true
+  if (v === "off" || v === "false" || v === "0" || v === "no") return false
+  return !current
 }

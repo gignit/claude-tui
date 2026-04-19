@@ -7,6 +7,7 @@
 import { For, Show, createMemo } from "solid-js"
 import { useTheme, useThemeContext } from "../context/theme.tsx"
 import { useExpand } from "../context/expand.tsx"
+import { useSettings } from "../context/settings.tsx"
 import { modeLabel } from "../../agent/modes.ts"
 import {
   displayToolName,
@@ -56,30 +57,57 @@ function UserBubble(props: { msg: UserDisplayMessage }) {
 function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
   const theme = useTheme()
   const { markdownStyle } = useThemeContext()
+  const settings = useSettings()
   // The assistant is the *primary* voice in the conversation; everything
   // else (user input, tool calls, system notices) is a side-channel that
   // gets a colored left border to attribute it. Assistant text renders
   // flush against the left edge so it reads as the main flow rather
   // than a quoted aside.
   //
-  // We use opentui's <markdown> intrinsic so headings, lists, tables,
-  // bold/italic, links, and inline code render with proper styling
-  // instead of as raw `**text**` etc. The `streaming` flag tells the
-  // parser to keep the trailing block unstable while text is still
-  // arriving, so we don't lock in a half-parsed table or list.
+  // Rendering strategy depends on two settings:
+  //   - markdown: false → always plain text (tables stay as raw pipes)
+  //   - markdown: true && markdownStreaming: true → live markdown,
+  //       reparses on every chunk; opentui's `streaming` flag keeps the
+  //       trailing block unstable so a half-built list/table doesn't lock
+  //       in early.
+  //   - markdown: true && markdownStreaming: false → plain text WHILE
+  //       streaming, then swaps to formatted markdown once complete.
+  //       Avoids the per-chunk reparse cost / flicker on slow terminals.
+  //
+  // The decision is reactive: toggling /markdown or /markdown-stream
+  // mid-conversation immediately rerenders existing bubbles in their
+  // new style.
+  const useMarkdown = () => settings.markdown() && (props.msg.complete || settings.markdownStreaming())
+  // Built once per theme, but we need to thread it through the JSX so
+  // SolidJS only rebuilds the markdown renderable when content/style
+  // actually changes.
+  const tableOpts = createMemo(() => ({
+    borders: true,
+    outerBorder: true,
+    borderStyle: "rounded" as const,
+    borderColor: theme.markdown.tableBorder,
+    cellPadding: 1,
+    wrapMode: "word" as const,
+  }))
   return (
     <box marginTop={1} flexShrink={0}>
       <Show when={props.msg.thinking}>
         <text fg={theme.thinking}>{prefix("thinking: ", props.msg.thinking ?? "")}</text>
       </Show>
       <Show when={props.msg.text}>
-        <markdown
-          content={props.msg.text}
-          syntaxStyle={markdownStyle}
-          fg={theme.text}
-          conceal={true}
-          streaming={!props.msg.complete}
-        />
+        <Show
+          when={useMarkdown()}
+          fallback={<text fg={theme.text}>{props.msg.text}</text>}
+        >
+          <markdown
+            content={props.msg.text}
+            syntaxStyle={markdownStyle}
+            fg={theme.text}
+            conceal={true}
+            streaming={!props.msg.complete}
+            tableOptions={tableOpts()}
+          />
+        </Show>
       </Show>
       <Show when={!props.msg.complete}>
         <text fg={theme.thinking}>{"..."}</text>

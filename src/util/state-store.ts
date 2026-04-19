@@ -16,6 +16,23 @@ export interface PersistedState {
   model?: string
   /** Mouse-wheel scroll speed in lines per tick (1..20). Default 3. */
   scrollSpeed?: number
+  /**
+   * Whether to render assistant messages through opentui's markdown
+   * renderer (headings, lists, tables, code, links). Disable to fall back
+   * to plain text. Default true.
+   */
+  markdown?: boolean
+  /**
+   * When markdown rendering is enabled, controls whether the renderer
+   * runs while text is still streaming (true → live re-parse on every
+   * chunk) or waits until the assistant message completes before
+   * formatting it (false → plain text shown during streaming, then
+   * swapped to formatted markdown on completion). Default true.
+   *
+   * Set to false if streaming markdown re-renders feel laggy or if the
+   * incremental parser produces visual flicker on your terminal.
+   */
+  markdownStreaming?: boolean
 }
 
 export function statePath(): string {

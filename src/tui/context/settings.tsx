@@ -25,6 +25,16 @@ export interface SettingsContextValue {
   /** Mouse-wheel scroll speed in lines per tick. */
   scrollSpeed: () => number
   setScrollSpeed: (n: number) => void
+  /** Render assistant text through the markdown renderer. */
+  markdown: () => boolean
+  setMarkdown: (on: boolean) => void
+  /**
+   * When markdown is on, also render incrementally while text streams.
+   * When false, the bubble shows plain text during streaming and swaps
+   * to markdown the moment the message completes.
+   */
+  markdownStreaming: () => boolean
+  setMarkdownStreaming: (on: boolean) => void
 }
 
 const Ctx = createContext<SettingsContextValue | null>(null)
@@ -41,6 +51,13 @@ export function SettingsProvider(props: SettingsProviderProps) {
     props.initialScrollSpeed ?? persisted.scrollSpeed ?? DEFAULT_SCROLL_SPEED,
   )
   const [scrollSpeed, setScrollSpeedSignal] = createSignal(initial)
+  // Markdown rendering defaults to ON. The persisted value wins if it
+  // was explicitly set (true OR false) — that's why we check `?? true`
+  // on the field rather than `|| true` (which would flip false → true).
+  const [markdown, setMarkdownSignal] = createSignal<boolean>(persisted.markdown ?? true)
+  const [markdownStreaming, setMarkdownStreamingSignal] = createSignal<boolean>(
+    persisted.markdownStreaming ?? true,
+  )
 
   const value: SettingsContextValue = {
     scrollSpeed,
@@ -49,6 +66,18 @@ export function SettingsProvider(props: SettingsProviderProps) {
       setScrollSpeedSignal(next)
       saveState({ scrollSpeed: next })
       dlog("settings.scrollSpeed", { value: next })
+    },
+    markdown,
+    setMarkdown: (on) => {
+      setMarkdownSignal(on)
+      saveState({ markdown: on })
+      dlog("settings.markdown", { value: on })
+    },
+    markdownStreaming,
+    setMarkdownStreaming: (on) => {
+      setMarkdownStreamingSignal(on)
+      saveState({ markdownStreaming: on })
+      dlog("settings.markdownStreaming", { value: on })
     },
   }
 
