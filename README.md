@@ -1,5 +1,6 @@
 # Claude Code TUI
 
+
 An open-source terminal UI for **Claude Code**, built on Anthropic's
 official **[`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk)**.
 
@@ -9,14 +10,24 @@ official **[`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@ant
 > improve. **Help wanted!** PRs, issues, ideas, and design feedback
 > are all welcome.
 
+
+<img width="1268" height="829" alt="Screenshot from 2026-04-18 20-05-02" src="https://github.com/user-attachments/assets/927075b0-796e-4ece-9381-fa63f182c024" />
+<br>
+<img width="1268" height="829" alt="Screenshot from 2026-04-18 20-05-18" src="https://github.com/user-attachments/assets/4db2e7bc-f7f1-4d85-9aa3-fc779b3b590e" />
+<br>
+<img width="1268" height="829" alt="Screenshot from 2026-04-18 20-05-24" src="https://github.com/user-attachments/assets/b0579f91-a0f3-4adf-995d-6aa004f3f33e" />
+<br>
+<img width="1268" height="829" alt="Screenshot from 2026-04-18 20-05-39" src="https://github.com/user-attachments/assets/cb34282d-2c66-4e05-959e-2639bfa9a5c2" />
+
+
 ---
 
 ## Why this exists
 
-Claude Code's bundled TUI is great, but it's a black box. This project
-gives you:
+Claude Code's bundled TUI is very limited and anthropic is locking down 3rd party applications (opencode). 
+This leverages the Official Anthropic SDK and claude binary so it's 100% supported and always will be.
 
-- A small, hackable TUI written entirely in TypeScript on top of the
+- TUI written entirely in TypeScript on top of the
   same agent runtime Anthropic ships, via the public Agent SDK.
 - A starting point you can fork, theme, restyle, or extend without
   reverse-engineering anything.
