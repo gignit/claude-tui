@@ -7,8 +7,9 @@
  * old_string/new_string sizes (rarely more than ~100 lines on each
  * side). Don't use this on multi-megabyte inputs.
  *
- * No external dependencies; opencode pulls in the `diff` npm package
- * but we don't need anything that fancy for our render path.
+ * No external dependencies — the npm `diff` package would do this and
+ * more, but a hand-rolled LCS keeps the build slim and the output
+ * shape exactly what our renderer expects.
  */
 
 export type DiffLineKind = "removed" | "added" | "unchanged"

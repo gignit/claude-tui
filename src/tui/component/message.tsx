@@ -16,6 +16,7 @@ import {
   type RichPreview,
 } from "../../util/tool-format.ts"
 import { lineDiff } from "../../util/diff.ts"
+import { splitMarkdown, type MarkdownSegment } from "../../util/markdown-segments.ts"
 import type {
   AssistantDisplayMessage,
   DisplayItem,
@@ -56,7 +57,6 @@ function UserBubble(props: { msg: UserDisplayMessage }) {
 
 function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
   const theme = useTheme()
-  const { syntaxStyle, treeSitterClient } = useThemeContext()
   const settings = useSettings()
   // The assistant is the *primary* voice in the conversation; everything
   // else (user input, tool calls, system notices) is a side-channel that
@@ -78,6 +78,12 @@ function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
   // mid-conversation immediately rerenders existing bubbles in their
   // new style.
   const useMarkdown = () => settings.markdown() && (props.msg.complete || settings.markdownStreaming())
+  // Split the markdown source into structural segments (text, rule,
+  // blockquote). Each blockquote's inner content is recursively
+  // re-split by <MarkdownContent>, so nested `> >` quotes naturally
+  // produce nested left-bar boxes. See src/util/markdown-segments.ts
+  // for why we split at the source layer.
+  const segments = createMemo(() => splitMarkdown(props.msg.text))
   // Built once per theme, but we need to thread it through the JSX so
   // SolidJS only rebuilds the markdown renderable when content/style
   // actually changes.
@@ -99,15 +105,10 @@ function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
           when={useMarkdown()}
           fallback={<text fg={theme.text}>{props.msg.text}</text>}
         >
-          <markdown
-            content={props.msg.text}
-            syntaxStyle={syntaxStyle}
-            treeSitterClient={treeSitterClient}
-            fg={theme.text}
-            conceal={true}
-            concealCode={false}
+          <MarkdownContent
+            segments={segments()}
             streaming={!props.msg.complete}
-            tableOptions={tableOpts()}
+            tableOpts={tableOpts()}
           />
         </Show>
       </Show>
@@ -123,6 +124,92 @@ function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
         })()}
       </Show>
     </box>
+  )
+}
+
+/**
+ * Recursive renderer for the MarkdownSegment list:
+ *
+ *   - text       → <markdown> element with our syntaxStyle + tree-sitter
+ *   - rule       → 1-row <box border={["top"]}> that follows the
+ *                  container width (resizes with the terminal)
+ *   - blockquote → <box border={["left"]}> wrapping a recursive
+ *                  <MarkdownContent> on the stripped inner text. The
+ *                  recursion is what makes nested `> >` quotes show
+ *                  as nested left-bar boxes — each strip layer wraps
+ *                  the inner content in another bordered box.
+ *
+ * `streaming` and `tableOpts` are forwarded to every nested <markdown>.
+ * Streaming is technically only relevant to the trailing block, but
+ * keeping it on for completed inner segments is harmless — opentui
+ * just leaves the trailing parse stable, which is what we want anyway.
+ */
+function MarkdownContent(props: {
+  segments: MarkdownSegment[]
+  streaming: boolean
+  tableOpts: Record<string, unknown>
+}) {
+  const theme = useTheme()
+  const { syntaxStyle, treeSitterClient } = useThemeContext()
+  return (
+    <For each={props.segments}>
+      {(seg) => {
+        if (seg.kind === "rule") {
+          // 1-row box, no content, just a top border. Width defaults to
+          // 100% of the parent so the rule automatically follows the
+          // terminal width on resize — same mechanism opentui uses for
+          // table borders. marginTop/marginBottom give the rule a
+          // paragraph worth of breathing room above and below.
+          return (
+            <box
+              height={1}
+              marginTop={1}
+              marginBottom={1}
+              flexShrink={0}
+              border={["top"]}
+              borderStyle="single"
+              borderColor={theme.markdown.rule}
+            />
+          )
+        }
+        if (seg.kind === "blockquote") {
+          // The left-edge `│` indicator + 1ch padding before the
+          // content. Recursing on splitMarkdown(seg.text) lets nested
+          // `> >` quotes naturally produce nested bordered boxes
+          // because the stripped inner content still starts with `>`.
+          const innerSegments = createMemo(() => splitMarkdown(seg.text))
+          return (
+            <box
+              marginTop={1}
+              flexShrink={0}
+              border={["left"]}
+              borderStyle="single"
+              borderColor={theme.markdown.rule}
+              paddingLeft={1}
+            >
+              <MarkdownContent
+                segments={innerSegments()}
+                streaming={props.streaming}
+                tableOpts={props.tableOpts}
+              />
+            </box>
+          )
+        }
+        // text
+        return (
+          <markdown
+            content={seg.text}
+            syntaxStyle={syntaxStyle}
+            treeSitterClient={treeSitterClient}
+            fg={theme.text}
+            conceal={true}
+            concealCode={false}
+            streaming={props.streaming}
+            tableOptions={props.tableOpts}
+          />
+        )
+      }}
+    </For>
   )
 }
 

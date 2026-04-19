@@ -180,7 +180,7 @@ export const DARK_THEME: Theme = {
     link: "#7aa2f7", // accent
     linkText: "#7dcfff", // cyan label
     blockquote: "#9a9a9a", // muted + italic attribute
-    rule: "#3a3a3a", // a touch brighter than `border` so it's actually visible
+    rule: "#2a2a2a", // matches the panel border — subtle, not a focal point
     listBullet: "#d97757", // primary orange — pops against text
     listNumber: "#7aa2f7", // accent blue
     tableHeader: "#7aa2f7", // accent blue, bold
@@ -304,6 +304,13 @@ function buildSyntaxStyle(theme: Theme): SyntaxStyle {
       style: { foreground: sx.keyword, italic: true },
     },
     { scope: ["keyword.function"], style: { foreground: sx.function } },
+    // YAML / TOML frontmatter blocks. tree-sitter-markdown emits
+    // `keyword.directive` (priority 90) for the entire `---...---`
+    // region, which would normally fall through to `keyword` (italic)
+    // and cascade italic across the whole frontmatter body. We pin it
+    // to a plain muted style so even legitimate frontmatter doesn't
+    // leak attributes into nested content.
+    { scope: ["keyword.directive"], style: { foreground: theme.textMuted } },
     {
       scope: ["keyword.type", "type", "type.definition", "type.builtin", "module"],
       style: { foreground: sx.type },
@@ -314,7 +321,16 @@ function buildSyntaxStyle(theme: Theme): SyntaxStyle {
       style: { foreground: sx.operator },
     },
     { scope: ["variable", "variable.parameter", "variable.member", "parameter", "property", "field"], style: { foreground: sx.variable } },
-    { scope: ["punctuation", "punctuation.bracket", "punctuation.special"], style: { foreground: sx.punctuation } },
+    { scope: ["punctuation", "punctuation.bracket"], style: { foreground: sx.punctuation } },
+    // `punctuation.special` in tree-sitter-markdown is exclusively the
+    // blockquote `>` markers and continuation lines (we split `---`
+    // out at the source layer, and table `|` chars are intercepted by
+    // opentui's TextTableRenderable before the markdown grammar
+    // sees them — neither reaches this scope in our pipeline).
+    // Match the blockquote body style so the `>` indicator blends
+    // with its surrounding text instead of standing out as its own
+    // dim grey color.
+    { scope: ["punctuation.special"], style: { foreground: md.blockquote, italic: true } },
     {
       scope: ["variable.builtin", "function.builtin", "constant.builtin", "module.builtin", "variable.super"],
       style: { foreground: sx.builtin },

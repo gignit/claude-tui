@@ -1,7 +1,7 @@
 /**
- * Minimal keybind registry. Opencode has a richer leader-key system; we
- * just need named actions so the help text and the global handler stay in
- * one place.
+ * Minimal keybind registry. We just need named actions so the help
+ * text and the global handler stay in one place — no leader-key
+ * sequences or vim-style multi-step bindings here.
  */
 
 import { createContext, useContext, type JSX } from "solid-js"
