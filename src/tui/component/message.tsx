@@ -56,7 +56,7 @@ function UserBubble(props: { msg: UserDisplayMessage }) {
 
 function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
   const theme = useTheme()
-  const { markdownStyle } = useThemeContext()
+  const { syntaxStyle, treeSitterClient } = useThemeContext()
   const settings = useSettings()
   // The assistant is the *primary* voice in the conversation; everything
   // else (user input, tool calls, system notices) is a side-channel that
@@ -101,9 +101,11 @@ function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
         >
           <markdown
             content={props.msg.text}
-            syntaxStyle={markdownStyle}
+            syntaxStyle={syntaxStyle}
+            treeSitterClient={treeSitterClient}
             fg={theme.text}
             conceal={true}
+            concealCode={false}
             streaming={!props.msg.complete}
             tableOptions={tableOpts()}
           />

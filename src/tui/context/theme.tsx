@@ -1,7 +1,7 @@
 /**
  * Theme system.
  *
- * The Theme object exposes two layers:
+ * The Theme object exposes three layers:
  *
  *   1. **UI palette** — flat color roles used directly by components
  *      (`background`, `text`, `primary`, `accent`, `tool`, etc.). These
@@ -9,19 +9,27 @@
  *
  *   2. **Markdown palette** — color roles tied to markdown elements
  *      (heading, bold, italic, inline code, link, list bullet, table,
- *      blockquote, rule). Stored as plain hex strings on the Theme
- *      object so a future "switch theme" command can swap them in
- *      reactively.
+ *      blockquote, rule). Stored as plain hex strings on the Theme so
+ *      a future "switch theme" command can swap them in reactively.
+ *
+ *   3. **Syntax palette** — color roles tied to *code* tokens that
+ *      tree-sitter emits when highlighting fenced code blocks (and the
+ *      embedded markdown grammar). Without these, headings, list
+ *      bullets, horizontal rules, and language-tagged code fences all
+ *      render as undifferentiated body text — opentui delegates those
+ *      to a CodeRenderable with `filetype: "markdown"` whose default
+ *      style is `default` (= our text color) unless the syntax style
+ *      registers `markup.heading.N`, `markup.list`, etc. The same
+ *      registry is also what colors `keyword`, `string`, `function`
+ *      inside ```ts ... ``` blocks.
  *
  * `useTheme()` returns:
- *   - the live `Theme` object
- *   - a derived `markdownStyle: SyntaxStyle` ready to pass to opentui's
- *     `<markdown syntaxStyle={…} />`. Built once per theme via
- *     SyntaxStyle.fromStyles, mapping our markdown palette to the
- *     TextMate scopes the markdown renderer queries
- *     (`markup.heading`, `markup.strong`, `markup.italic`,
- *     `markup.strikethrough`, `markup.raw`, `markup.link`,
- *     `markup.link.label`, `markup.link.url`, `default`, `conceal`).
+ *   - the live `Theme` object (flat UI palette + nested groups).
+ * `useThemeContext()` additionally returns:
+ *   - `syntaxStyle: SyntaxStyle` — the merged opentui style table
+ *     consumed by `<markdown syntaxStyle={…} />` and `<code …>`.
+ *   - `treeSitterClient: TreeSitterClient` — the singleton client used
+ *     to actually compute highlights for both markdown and fenced code.
  *
  * Adding a new theme: define another `Theme` object and pass it to
  * <ThemeProvider theme={...}>. Default is DARK_THEME; we currently only
@@ -29,7 +37,13 @@
  */
 
 import { createContext, createMemo, useContext, type JSX } from "solid-js"
-import { RGBA, SyntaxStyle, type ColorInput, type StyleDefinition } from "@opentui/core"
+import {
+  RGBA,
+  SyntaxStyle,
+  type ColorInput,
+  type ThemeTokenStyle,
+} from "@opentui/core"
+import { getTreeSitterClient, type TreeSitterClient } from "@opentui/core"
 
 export interface MarkdownPalette {
   /** # / ## / ### headings (flat across levels — opentui only exposes one scope). */
@@ -60,6 +74,41 @@ export interface MarkdownPalette {
   tableHeader: string
   /** Table grid lines. */
   tableBorder: string
+  /** Default foreground for fenced code block content (when no token-level
+   *  highlight wins). Lighter / dimmer than body text helps the code feel
+   *  like a separate region. */
+  codeBlock: string
+}
+
+/**
+ * Code-syntax color roles. These map onto the token classes tree-sitter
+ * grammars emit (`comment`, `string`, `keyword`, `function`, …). The same
+ * names are reused inside the markdown grammar for `markup.heading`,
+ * `markup.list`, etc., so the SyntaxStyle is one shared registry.
+ */
+export interface SyntaxPalette {
+  /** // and /* … *\/ */
+  comment: string
+  /** "string literals", 'single quoted', `template`. */
+  string: string
+  /** 42, 3.14, 0x1f */
+  number: string
+  /** if / else / return / async / fn / let / const … */
+  keyword: string
+  /** type names — User, string, int. */
+  type: string
+  /** function / method names. */
+  function: string
+  /** + - * / && || === */
+  operator: string
+  /** identifier names (variables, parameters). */
+  variable: string
+  /** ( ) { } [ ] , ; */
+  punctuation: string
+  /** Builtins (true, false, null, undefined, console, …). */
+  builtin: string
+  /** Tag names in HTML/JSX. */
+  tag: string
 }
 
 export interface Theme {
@@ -81,6 +130,7 @@ export interface Theme {
   success: string
   thinking: string
   markdown: MarkdownPalette
+  syntax: SyntaxPalette
 }
 
 /**
@@ -93,6 +143,14 @@ export interface Theme {
  *     attributed elsewhere — keeps "this is code" visually consistent.
  *   - lists, tables, and rules use the existing border/accent palette
  *     so structure feels integrated rather than bolted on.
+ *
+ * Syntax palette is a measured Tokyonight-ish set chosen to read well
+ * against the panel background:
+ *   - blue-violet for keywords, cyan for types, soft-blue for functions
+ *   - green for strings (the calmest scope visually)
+ *   - orange for numbers and constants (matches the Claude primary)
+ *   - dim grey for comments and punctuation so the eye lands on
+ *     structurally meaningful tokens first.
  */
 export const DARK_THEME: Theme = {
   background: "#0a0a0a",
@@ -122,68 +180,193 @@ export const DARK_THEME: Theme = {
     link: "#7aa2f7", // accent
     linkText: "#7dcfff", // cyan label
     blockquote: "#9a9a9a", // muted + italic attribute
-    rule: "#2a2a2a", // border color
+    rule: "#3a3a3a", // a touch brighter than `border` so it's actually visible
     listBullet: "#d97757", // primary orange — pops against text
     listNumber: "#7aa2f7", // accent blue
     tableHeader: "#7aa2f7", // accent blue, bold
     tableBorder: "#2a2a2a", // border
+    codeBlock: "#c0c0c0", // slightly cooler than text — code reads as "set apart"
+  },
+  syntax: {
+    comment: "#5e5e5e", // dim — out of the way
+    string: "#9ece6a", // green — calm
+    number: "#ff9e64", // soft orange — close to Claude primary
+    keyword: "#bb9af7", // violet — same family as assistant accent
+    type: "#7dcfff", // cyan — pairs with inlineCode
+    function: "#7aa2f7", // accent blue
+    operator: "#89ddff", // pale cyan
+    variable: "#e6e6e6", // body text — variables are the "default" identifier
+    punctuation: "#7c7c7c", // dim grey — present but not loud
+    builtin: "#f7768e", // pinkish red — true/false/null/console
+    tag: "#f7768e", // same as builtin
   },
 }
 
 /**
- * Build a SyntaxStyle from the theme's markdown palette. Maps our role
- * names to the TextMate-style scopes opentui's markdown renderer queries.
+ * Build a SyntaxStyle covering both markdown structure and code tokens.
+ *
+ * Why one shared registry: opentui's `<markdown>` element delegates
+ * heading / list / horizontal-rule / code-fence rendering to an internal
+ * `CodeRenderable` with `filetype: "markdown"`. That renderable asks
+ * tree-sitter (via the bundled markdown grammar) for highlight ranges
+ * tagged with TextMate-ish scope names like `markup.heading.1`,
+ * `markup.list`, `punctuation.special`, etc. The SAME renderable is
+ * also used by fenced code blocks (` ```ts … ``` ` → `filetype:
+ * "typescript"`), where tree-sitter emits scopes like `keyword`,
+ * `string`, `function`. Mapping both sets here means one registry
+ * styles everything from headings to code.
  *
  * The "conceal" scope is special: opentui uses it to hide markdown
- * source markers (e.g. the `**` around bold text) when `conceal: true`
- * is set on the <markdown> element. We map it to the background color
- * so the markers fade out without affecting layout.
+ * source markers (e.g. the `**` around bold text, `# ` before headings,
+ * the language hint after ` ``` `) when `conceal: true` / `concealCode:
+ * true` is set on the `<markdown>` element. We map it to the background
+ * color + dim so the markers fade out without disturbing layout.
  */
-function buildMarkdownSyntaxStyle(theme: Theme): SyntaxStyle {
+function buildSyntaxStyle(theme: Theme): SyntaxStyle {
   const md = theme.markdown
-  const styles: Record<string, StyleDefinition> = {
-    default: defStyle({ fg: theme.text }),
-    conceal: defStyle({ fg: theme.background, dim: true }),
-    "markup.heading": defStyle({ fg: md.heading, bold: true }),
-    "markup.strong": defStyle({ fg: md.bold, bold: true }),
-    "markup.italic": defStyle({ fg: md.italic, italic: true }),
-    "markup.strikethrough": defStyle({ fg: md.strike }),
-    "markup.raw": defStyle({ fg: md.inlineCode, ...(md.inlineCodeBg ? { bg: md.inlineCodeBg } : {}) }),
-    "markup.link": defStyle({ fg: md.link, underline: true }),
-    "markup.link.label": defStyle({ fg: md.linkText }),
-    "markup.link.url": defStyle({ fg: md.link, underline: true }),
-  }
-  return SyntaxStyle.fromStyles(styles)
+  const sx = theme.syntax
+  // ThemeTokenStyle is the array form of the opentui registry: each
+  // entry binds one or more scopes to a single style. The renderer
+  // resolves a token's scope by walking the longest-match prefix —
+  // `markup.heading.1` will use a `markup.heading.1` style if defined,
+  // otherwise it falls through to `markup.heading`, then `default`.
+  const rules: ThemeTokenStyle[] = [
+    // Default body text — applies to anything without a more specific
+    // scope (paragraph prose, list item content, etc).
+    { scope: ["default"], style: { foreground: theme.text } },
+    // Markdown source markers (`**`, `_`, leading `#`, fence backticks)
+    // when conceal is on. background+dim makes them invisible without
+    // changing the cell width.
+    { scope: ["conceal"], style: { foreground: theme.background, dim: true } },
+
+    // ─── Markdown structure ───────────────────────────────────────────
+    // Generic + per-level. tree-sitter sometimes emits the leveled
+    // form (`markup.heading.1`); we map all six to the same style so
+    // levels look consistent rather than introducing a size hierarchy
+    // that doesn't really translate to a terminal.
+    { scope: ["markup.heading"], style: { foreground: md.heading, bold: true } },
+    { scope: ["markup.heading.1"], style: { foreground: md.heading, bold: true } },
+    { scope: ["markup.heading.2"], style: { foreground: md.heading, bold: true } },
+    { scope: ["markup.heading.3"], style: { foreground: md.heading, bold: true } },
+    { scope: ["markup.heading.4"], style: { foreground: md.heading, bold: true } },
+    { scope: ["markup.heading.5"], style: { foreground: md.heading, bold: true } },
+    { scope: ["markup.heading.6"], style: { foreground: md.heading, bold: true } },
+    {
+      scope: ["markup.bold", "markup.strong"],
+      style: { foreground: md.bold, bold: true },
+    },
+    { scope: ["markup.italic"], style: { foreground: md.italic, italic: true } },
+    { scope: ["markup.strikethrough"], style: { foreground: md.strike } },
+    { scope: ["markup.list"], style: { foreground: md.listBullet } },
+    {
+      scope: ["markup.list.checked"],
+      style: { foreground: theme.success },
+    },
+    {
+      scope: ["markup.list.unchecked"],
+      style: { foreground: theme.textMuted },
+    },
+    {
+      scope: ["markup.quote"],
+      style: { foreground: md.blockquote, italic: true },
+    },
+    // Inline `code` — set a background to make it pop the way GitHub
+    // inline code does. The block variants don't get a background; they
+    // already live inside a CodeRenderable with its own `fg`.
+    {
+      scope: ["markup.raw.inline"],
+      style: {
+        foreground: md.inlineCode,
+        ...(md.inlineCodeBg ? { background: md.inlineCodeBg } : {}),
+      },
+    },
+    {
+      scope: ["markup.raw", "markup.raw.block"],
+      style: { foreground: md.inlineCode },
+    },
+    {
+      scope: ["markup.link"],
+      style: { foreground: md.link, underline: true },
+    },
+    { scope: ["markup.link.label"], style: { foreground: md.linkText } },
+    {
+      scope: ["markup.link.url"],
+      style: { foreground: md.link, underline: true },
+    },
+
+    // ─── Code-syntax scopes (tree-sitter's standard token class set) ──
+    { scope: ["comment", "comment.documentation"], style: { foreground: sx.comment, italic: true } },
+    { scope: ["string", "symbol", "character"], style: { foreground: sx.string } },
+    { scope: ["string.escape", "string.regexp"], style: { foreground: sx.keyword } },
+    { scope: ["number", "boolean", "float", "constant"], style: { foreground: sx.number } },
+    {
+      scope: ["keyword", "keyword.return", "keyword.conditional", "keyword.repeat", "keyword.import", "keyword.export", "keyword.exception", "keyword.modifier"],
+      style: { foreground: sx.keyword, italic: true },
+    },
+    { scope: ["keyword.function"], style: { foreground: sx.function } },
+    {
+      scope: ["keyword.type", "type", "type.definition", "type.builtin", "module"],
+      style: { foreground: sx.type },
+    },
+    { scope: ["function", "function.call", "function.method", "function.method.call", "constructor"], style: { foreground: sx.function } },
+    {
+      scope: ["operator", "keyword.operator", "punctuation.delimiter", "keyword.conditional.ternary"],
+      style: { foreground: sx.operator },
+    },
+    { scope: ["variable", "variable.parameter", "variable.member", "parameter", "property", "field"], style: { foreground: sx.variable } },
+    { scope: ["punctuation", "punctuation.bracket", "punctuation.special"], style: { foreground: sx.punctuation } },
+    {
+      scope: ["variable.builtin", "function.builtin", "constant.builtin", "module.builtin", "variable.super"],
+      style: { foreground: sx.builtin },
+    },
+    { scope: ["class", "namespace"], style: { foreground: sx.type } },
+    { scope: ["tag", "tag.attribute"], style: { foreground: sx.tag } },
+    { scope: ["tag.delimiter"], style: { foreground: sx.operator } },
+    { scope: ["attribute", "annotation"], style: { foreground: theme.warn } },
+    { scope: ["label"], style: { foreground: md.linkText } },
+  ]
+  return SyntaxStyle.fromTheme(toRgbaTheme(rules))
 }
 
-/** Adapter: hex/RGBA inputs from theme → opentui StyleDefinition with RGBA. */
-function defStyle(input: {
-  fg?: ColorInput
-  bg?: ColorInput
-  bold?: boolean
-  italic?: boolean
-  underline?: boolean
-  dim?: boolean
-}): StyleDefinition {
-  const out: StyleDefinition = {}
-  if (input.fg !== undefined) out.fg = toRgba(input.fg)
-  if (input.bg !== undefined) out.bg = toRgba(input.bg)
-  if (input.bold) out.bold = true
-  if (input.italic) out.italic = true
-  if (input.underline) out.underline = true
-  if (input.dim) out.dim = true
-  return out
+/** Convert hex strings on a ThemeTokenStyle[] to RGBA so opentui can use them. */
+function toRgbaTheme(rules: ThemeTokenStyle[]): ThemeTokenStyle[] {
+  return rules.map((r) => ({
+    scope: r.scope,
+    style: {
+      ...(r.style.foreground !== undefined ? { foreground: toRgba(r.style.foreground) } : {}),
+      ...(r.style.background !== undefined ? { background: toRgba(r.style.background) } : {}),
+      ...(r.style.bold ? { bold: true } : {}),
+      ...(r.style.italic ? { italic: true } : {}),
+      ...(r.style.underline ? { underline: true } : {}),
+      ...(r.style.dim ? { dim: true } : {}),
+    },
+  }))
 }
 
 function toRgba(c: ColorInput): RGBA {
   if (typeof c === "string") return RGBA.fromHex(c)
-  // Already an RGBA — pass through.
   return c as RGBA
 }
 
 export interface ThemeContextValue {
   theme: Theme
-  /** Pre-built SyntaxStyle for opentui's <markdown> element. */
+  /** Pre-built SyntaxStyle for opentui's <markdown> and <code> elements. */
+  syntaxStyle: SyntaxStyle
+  /**
+   * Singleton tree-sitter client. Cheap to grab — opentui memoizes it,
+   * so calling getTreeSitterClient() multiple times returns the same
+   * worker. Threading it through the context lets callsites pass it to
+   * `<markdown treeSitterClient={…} />` without having to import opentui
+   * directly. (Only `<markdown>` needs the explicit prop; `<code>`
+   * auto-falls-back to the singleton via opentui's CodeRenderable
+   * constructor.)
+   */
+  treeSitterClient: TreeSitterClient
+  /**
+   * Backwards-compat alias for the old `markdownStyle` field. Same
+   * SyntaxStyle as `syntaxStyle` — kept under both names while we
+   * migrate consumers.
+   */
   markdownStyle: SyntaxStyle
 }
 
@@ -199,7 +382,16 @@ export function ThemeProvider(props: ThemeProviderProps) {
   // Memo so SyntaxStyle is built once per theme switch (not per render).
   const value = createMemo<ThemeContextValue>(() => {
     const theme = props.theme ?? DARK_THEME
-    return { theme, markdownStyle: buildMarkdownSyntaxStyle(theme) }
+    const syntaxStyle = buildSyntaxStyle(theme)
+    // getTreeSitterClient() is itself memoized (singleton) — calling it
+    // multiple times just returns the same worker-backed client.
+    const treeSitterClient = getTreeSitterClient()
+    return {
+      theme,
+      syntaxStyle,
+      treeSitterClient,
+      markdownStyle: syntaxStyle,
+    }
   })
   return <ThemeContext.Provider value={value()}>{props.children}</ThemeContext.Provider>
 }
@@ -207,12 +399,6 @@ export function ThemeProvider(props: ThemeProviderProps) {
 /**
  * Returns the live Theme object. Backwards-compatible: existing
  * callsites still get the flat color palette via `useTheme().<role>`.
- * The markdown SyntaxStyle is also accessible via `useTheme().markdown`
- * — wait, no: `useTheme()` returns the Theme directly. To access the
- * SyntaxStyle, use `useThemeContext().markdownStyle`.
- *
- * (We keep the two-level API to avoid breaking every existing
- * `useTheme().background` call.)
  */
 export function useTheme(): Theme {
   const ctx = useContext(ThemeContext)
@@ -220,7 +406,7 @@ export function useTheme(): Theme {
   return ctx.theme
 }
 
-/** Full context value (theme + derived SyntaxStyle). */
+/** Full context value (theme + derived SyntaxStyle + TS client). */
 export function useThemeContext(): ThemeContextValue {
   const ctx = useContext(ThemeContext)
   if (!ctx) throw new Error("useThemeContext() called outside <ThemeProvider>")
