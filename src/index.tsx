@@ -25,6 +25,7 @@ interface Argv {
   cwd: string
   model?: string
   bin?: string
+  scrollSpeed?: number
   debug: boolean
   debugLog?: string
   help: boolean
@@ -57,12 +58,16 @@ function parseArgs(argv: readonly string[]): Argv {
     } else if (a === "--debug-log" && argv[i + 1]) {
       out.debugLog = argv[++i]!
       out.debug = true
+    } else if (a === "--scroll-speed" && argv[i + 1]) {
+      out.scrollSpeed = Number.parseInt(argv[++i]!, 10)
     } else if (a.startsWith("--model=")) {
       out.model = a.slice("--model=".length)
     } else if (a.startsWith("--cwd=")) {
       out.cwd = a.slice("--cwd=".length)
     } else if (a.startsWith("--bin=")) {
       out.bin = a.slice("--bin=".length)
+    } else if (a.startsWith("--scroll-speed=")) {
+      out.scrollSpeed = Number.parseInt(a.slice("--scroll-speed=".length), 10)
     } else if (a.startsWith("--debug-log=")) {
       out.debugLog = a.slice("--debug-log=".length)
       out.debug = true
@@ -83,6 +88,7 @@ function printHelp(): void {
       "  --model <id>          Model id (default: persisted choice, else `claude` default)",
       "  --bin <path>          Path to the `claude` binary (default: auto-detect from",
       "                        PATH or ~/.local/bin/claude; override with $CLAUDE_TUI_BIN)",
+      "  --scroll-speed <n>    Mouse-wheel lines per tick (1-20, default 3). Persists.",
       `  --debug               Log every event to ${DEFAULT_DEBUG_LOG}`,
       "                        and surface SDK subprocess stderr in the TUI",
       "  --debug-log <path>    Use a custom debug log path (implies --debug)",
@@ -107,6 +113,7 @@ function printHelp(): void {
       "  /menu                 open the command menu (also Ctrl+K)",
       "  /models               pick a model from your account's available list",
       "  /sessions             resume a previous conversation in the current project",
+      "  /scroll <n>           set mouse-wheel scroll speed (1-20 lines per tick)",
       "  /help                 list local commands",
       "  Anything else starting with / is forwarded to claude.",
       "",
@@ -141,6 +148,9 @@ async function main() {
     cwd: args.cwd,
     ...(model ? { model } : {}),
     ...(args.bin ? { pathToClaudeCodeExecutable: args.bin } : {}),
+    ...(args.scrollSpeed !== undefined && Number.isFinite(args.scrollSpeed)
+      ? { scrollSpeed: args.scrollSpeed }
+      : {}),
   })
 }
 

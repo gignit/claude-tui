@@ -184,12 +184,17 @@ export function Prompt(props: { disabled?: boolean }) {
 
   /** Slash-command lookup. Returns true if the command was triggered. */
   const handleSlashCommand = (raw: string): boolean => {
-    const head = raw.split(/\s+/, 1)[0] ?? ""
+    // Split on the first whitespace: the head is the slash command,
+    // the tail is the inline arg string (e.g. "/scroll 5" → head=/scroll, args="5").
+    const trimmed = raw.trim()
+    const spaceIdx = trimmed.search(/\s/)
+    const head = spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx)
+    const args = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1).trim()
     if (!head.startsWith("/")) return false
     const cmd = command.bySlash(head)
     if (!cmd) return false
-    dlog("prompt.slash.match", { name: head, value: cmd.value })
-    void cmd.onSelect()
+    dlog("prompt.slash.match", { name: head, value: cmd.value, args })
+    void cmd.onSelect(args)
     return true
   }
 

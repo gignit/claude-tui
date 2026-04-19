@@ -14,6 +14,8 @@ import { homedir } from "node:os"
 export interface PersistedState {
   /** Last selected model id. Undefined → use whatever `claude` defaults to. */
   model?: string
+  /** Mouse-wheel scroll speed in lines per tick (1..20). Default 3. */
+  scrollSpeed?: number
 }
 
 export function statePath(): string {

@@ -53,11 +53,14 @@ export interface CommandSpec {
    */
   opensDialog?: boolean
   /**
-   * Invoked when the user picks the command. Receives the dialog
-   * controller so you can `.replace(...)` to chain into another dialog
-   * or `.clear()` to dismiss.
+   * Invoked when the user picks the command. Receives any text the
+   * user typed AFTER the slash name when invoked via the prompt
+   * (e.g. `/scroll 5` → args = "5"; `/menu` → args = ""). Most
+   * commands ignore this; commands that take inline arguments parse
+   * it themselves. The arg is empty when the command was invoked
+   * from the menu rather than typed.
    */
-  onSelect: () => void | Promise<void>
+  onSelect: (args?: string) => void | Promise<void>
 }
 
 export interface CommandContext {
@@ -68,7 +71,7 @@ export interface CommandContext {
   /** Look up by slash name OR alias (case-insensitive, no leading /). */
   bySlash: (name: string) => CommandSpec | undefined
   /** Trigger a command by `value`. */
-  trigger: (value: string) => void
+  trigger: (value: string, args?: string) => void
   /** Open the palette. Optional initialFilter to scope the view. */
   show: (initialFilter?: string) => void
   /**
@@ -102,11 +105,11 @@ export function CommandProvider(props: ParentProps & { paletteRenderer: (initial
       }
       return undefined
     },
-    trigger(target) {
+    trigger(target, args) {
       for (const cmd of list()) {
         if (cmd.value !== target) continue
         if (cmd.enabled === false) return
-        dlog("command.trigger", { value: target })
+        dlog("command.trigger", { value: target, args })
         // If this command opens a sub-dialog and nothing is on the stack
         // yet, drop the palette underneath as the breadcrumb root so
         // the user can always navigate back to the full command list.
@@ -115,7 +118,7 @@ export function CommandProvider(props: ParentProps & { paletteRenderer: (initial
           dialog.replace(() => props.paletteRenderer(""), { title: "Menu" })
         }
         try {
-          void cmd.onSelect()
+          void cmd.onSelect(args)
         } catch (err) {
           dlog("command.trigger.error", { value: target, error: String(err) })
         }

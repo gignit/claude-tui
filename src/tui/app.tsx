@@ -9,6 +9,7 @@ import { render } from "@opentui/solid"
 import { ThemeProvider, useTheme } from "./context/theme.tsx"
 import { KeybindProvider } from "./context/keybind.tsx"
 import { ExpandProvider } from "./context/expand.tsx"
+import { SettingsProvider } from "./context/settings.tsx"
 import { AgentProvider } from "./context/agent.tsx"
 import { DialogProvider } from "./context/dialog.tsx"
 import { CommandProvider } from "./context/command.tsx"
@@ -21,6 +22,8 @@ export interface RunOptions {
   /** Optional. When undefined, the SDK uses whatever `claude` would default to. */
   model?: string
   pathToClaudeCodeExecutable?: string
+  /** Optional override for mouse-wheel scroll speed (lines per tick). */
+  scrollSpeed?: number
 }
 
 export async function runTui(opts: RunOptions): Promise<void> {
@@ -30,26 +33,30 @@ export async function runTui(opts: RunOptions): Promise<void> {
         <ThemeProvider>
           <KeybindProvider>
             <ExpandProvider>
-              <AgentProvider
-                config={{
-                  cwd: opts.cwd,
-                  ...(opts.model ? { model: opts.model } : {}),
-                  ...(opts.pathToClaudeCodeExecutable
-                    ? { pathToClaudeCodeExecutable: opts.pathToClaudeCodeExecutable }
-                    : {}),
-                }}
-              >
-                <DialogProvider>
-                  <CommandProvider paletteRenderer={(initialFilter) => <DialogCommand initialFilter={initialFilter} />}>
-                    <Chat />
-                    {/* Overlay must be inside CommandProvider (and every
-                        other provider) so dialog factories that call
-                        useCommand/useAgent/useTheme have those contexts
-                        available. See dialog-overlay.tsx for context. */}
-                    <DialogOverlay />
-                  </CommandProvider>
-                </DialogProvider>
-              </AgentProvider>
+              <SettingsProvider initialScrollSpeed={opts.scrollSpeed}>
+                <AgentProvider
+                  config={{
+                    cwd: opts.cwd,
+                    ...(opts.model ? { model: opts.model } : {}),
+                    ...(opts.pathToClaudeCodeExecutable
+                      ? { pathToClaudeCodeExecutable: opts.pathToClaudeCodeExecutable }
+                      : {}),
+                  }}
+                >
+                  <DialogProvider>
+                    <CommandProvider
+                      paletteRenderer={(initialFilter) => <DialogCommand initialFilter={initialFilter} />}
+                    >
+                      <Chat />
+                      {/* Overlay must be inside CommandProvider (and every
+                          other provider) so dialog factories that call
+                          useCommand/useAgent/useTheme have those contexts
+                          available. See dialog-overlay.tsx for context. */}
+                      <DialogOverlay />
+                    </CommandProvider>
+                  </DialogProvider>
+                </AgentProvider>
+              </SettingsProvider>
             </ExpandProvider>
           </KeybindProvider>
         </ThemeProvider>

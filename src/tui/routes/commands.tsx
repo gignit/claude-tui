@@ -16,13 +16,16 @@ import type { JSX } from "solid-js"
 import { useCommand, type CommandSpec } from "../context/command.tsx"
 import { useDialog, type DialogContext } from "../context/dialog.tsx"
 import { useAgent } from "../context/agent.tsx"
+import { useSettings } from "../context/settings.tsx"
 import { DialogModelList } from "../component/dialog-model.tsx"
 import { DialogSessionList } from "../component/dialog-session.tsx"
+import { MAX_SCROLL_SPEED, MIN_SCROLL_SPEED } from "../../util/scroll.ts"
 
 interface BuiltinDeps {
   command: ReturnType<typeof useCommand>
   dialog: DialogContext
   agent: ReturnType<typeof useAgent>
+  settings: ReturnType<typeof useSettings>
 }
 
 export function registerBuiltinCommands(): JSX.Element {
@@ -31,13 +34,14 @@ export function registerBuiltinCommands(): JSX.Element {
   const command = useCommand()
   const dialog = useDialog()
   const agent = useAgent()
+  const settings = useSettings()
 
-  command.register(() => buildSpecs({ command, dialog, agent }))
+  command.register(() => buildSpecs({ command, dialog, agent, settings }))
   return null
 }
 
 function buildSpecs(deps: BuiltinDeps): CommandSpec[] {
-  const { command, dialog, agent } = deps
+  const { command, dialog, agent, settings } = deps
   return [
     {
       value: "app.help",
@@ -93,6 +97,31 @@ function buildSpecs(deps: BuiltinDeps): CommandSpec[] {
       opensDialog: true,
       onSelect: () => {
         dialog.push(() => <DialogSessionList />, { title: "Switch session" })
+      },
+    },
+    {
+      value: "settings.scroll_speed",
+      title: "Set scroll speed",
+      description: `Mouse-wheel lines per tick (${MIN_SCROLL_SPEED}-${MAX_SCROLL_SPEED}). Persists across restarts.`,
+      category: "Settings",
+      slash: { name: "scroll", aliases: ["scroll-speed", "scrollspeed"] },
+      onSelect: (args) => {
+        const trimmed = (args ?? "").trim()
+        if (!trimmed) {
+          // Bare /scroll just shows the current value and the usage.
+          agent.pushNotice(
+            `/scroll: usage  /scroll <${MIN_SCROLL_SPEED}-${MAX_SCROLL_SPEED}>   (current: ${settings.scrollSpeed()})`,
+          )
+        } else {
+          const n = Number.parseInt(trimmed, 10)
+          if (!Number.isFinite(n)) {
+            agent.pushNotice(`/scroll: '${trimmed}' is not a number`)
+          } else {
+            settings.setScrollSpeed(n)
+            agent.pushNotice(`/scroll: set to ${settings.scrollSpeed()} lines per tick (saved)`)
+          }
+        }
+        dialog.clear()
       },
     },
   ]

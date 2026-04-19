@@ -20,7 +20,7 @@
  * plus enough messages to fill the screen.
  */
 
-import { For, Show } from "solid-js"
+import { For, Show, createMemo } from "solid-js"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/theme.tsx"
@@ -29,11 +29,13 @@ import { useExpand } from "../context/expand.tsx"
 import { useKeybind } from "../context/keybind.tsx"
 import { useCommand } from "../context/command.tsx"
 import { useDialog } from "../context/dialog.tsx"
+import { useSettings } from "../context/settings.tsx"
 import { MessageView } from "../component/message.tsx"
 import { Prompt } from "../component/prompt.tsx"
 import { StatusLine } from "../component/status-line.tsx"
 import { dlog } from "../../util/debug-log.ts"
 import { copyToClipboard } from "../../util/clipboard.ts"
+import { createScrollAccel } from "../../util/scroll.ts"
 import { registerBuiltinCommands } from "./commands.tsx"
 
 export function Chat() {
@@ -45,7 +47,13 @@ export function Chat() {
   const renderer = useRenderer()
   const command = useCommand()
   const dialog = useDialog()
+  const settings = useSettings()
   let scroll: ScrollBoxRenderable | undefined
+
+  // Rebuild the scroll-acceleration object whenever the user changes
+  // their scroll-speed setting. opentui's scrollbox watches the prop
+  // by reference identity, so we need a fresh object each time.
+  const scrollAccel = createMemo(() => createScrollAccel(settings.scrollSpeed()))
 
   // Register the built-in commands once. registerBuiltinCommands returns
   // null but its hook calls do all the work in the provider tree.
@@ -144,6 +152,7 @@ export function Chat() {
           flexGrow={1}
           stickyScroll={true}
           stickyStart="bottom"
+          scrollAcceleration={scrollAccel()}
           viewportOptions={{ paddingRight: 1 }}
           verticalScrollbarOptions={{
             visible: true,
