@@ -55,32 +55,31 @@ function UserBubble(props: { msg: UserDisplayMessage }) {
 
 function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
   const theme = useTheme()
-  // No "claude" label — the purple left-border is the speaker indicator.
-  // While streaming we append a dim "..." after the text so the user can
-  // tell the turn isn't done yet. Once complete, we stamp the model that
-  // produced this specific response so a mid-session /model switch never
-  // retroactively relabels older bubbles.
+  // The assistant is the *primary* voice in the conversation; everything
+  // else (user input, tool calls, system notices) is a side-channel that
+  // gets a colored left border to attribute it. Assistant text renders
+  // flush against the left edge so it reads as the main flow rather
+  // than a quoted aside. Streaming "..." and the model+mode stamp follow
+  // the same flat layout.
   return (
     <box marginTop={1} flexShrink={0}>
-      <box paddingLeft={2} borderColor={theme.assistant} border={["left"]}>
-        <Show when={props.msg.thinking}>
-          <text fg={theme.thinking}>{prefix("thinking: ", props.msg.thinking ?? "")}</text>
-        </Show>
-        <Show when={props.msg.text}>
-          <text fg={theme.text}>{props.msg.text}</text>
-        </Show>
-        <Show when={!props.msg.complete}>
-          <text fg={theme.thinking}>{"..."}</text>
-        </Show>
-        <Show when={props.msg.complete && (props.msg.model || props.msg.mode)}>
-          {(() => {
-            const parts: string[] = []
-            if (props.msg.mode) parts.push(modeLabel(props.msg.mode))
-            if (props.msg.model) parts.push(props.msg.model)
-            return <text fg={theme.textDim}>{parts.join(" • ")}</text>
-          })()}
-        </Show>
-      </box>
+      <Show when={props.msg.thinking}>
+        <text fg={theme.thinking}>{prefix("thinking: ", props.msg.thinking ?? "")}</text>
+      </Show>
+      <Show when={props.msg.text}>
+        <text fg={theme.text}>{props.msg.text}</text>
+      </Show>
+      <Show when={!props.msg.complete}>
+        <text fg={theme.thinking}>{"..."}</text>
+      </Show>
+      <Show when={props.msg.complete && (props.msg.model || props.msg.mode)}>
+        {(() => {
+          const parts: string[] = []
+          if (props.msg.mode) parts.push(modeLabel(props.msg.mode))
+          if (props.msg.model) parts.push(props.msg.model)
+          return <text fg={theme.textDim}>{parts.join(" • ")}</text>
+        })()}
+      </Show>
     </box>
   )
 }
