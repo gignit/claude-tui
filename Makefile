@@ -38,28 +38,23 @@ help:
 check:
 	@bun run typecheck
 
-install: $(LAUNCHER)
-	@printf '\n'
-	@printf 'Installed:  %s\n' '$(LAUNCHER)'
-	@printf 'Source:     %s\n' '$(SHARE_DIR)'
-	@printf '\n'
-	@case ":$$PATH:" in \
-	  *":$(BIN_DIR):"*) printf 'Run:        claude-tui\n' ;; \
-	  *) printf 'Note: %s is not on your PATH.\n' '$(BIN_DIR)' ; \
-	     printf '      Add this to your shell rc:\n' ; \
-	     printf '          export PATH="%s:$$PATH"\n' '$(BIN_DIR)' ; \
-	     printf '      Or run directly: %s\n' '$(LAUNCHER)' ;; \
-	esac
-
-# Stage the install dir (copy source + install deps), then write the launcher.
-$(LAUNCHER): $(INSTALL_FILES)
+# install is .PHONY so it ALWAYS runs. We don't gate on launcher mtime
+# because the launcher is a 30-line shell script that doesn't change
+# when source under src/<subdir>/ changes — make's directory mtime check
+# wouldn't notice deep edits and you'd silently get a stale install.
+install:
 	@command -v bun >/dev/null 2>&1 || { \
 	  printf 'error: bun is not installed (see https://bun.sh)\n' >&2 ; exit 1 ; }
-	@printf '==> Preparing %s\n' '$(SHARE_DIR)'
+	@printf '==> Staging source to %s\n' '$(SHARE_DIR)'
 	@mkdir -p '$(SHARE_DIR)'
 	@mkdir -p '$(BIN_DIR)'
+	@# Wipe the staged src/ before recopying so deletions in the project
+	@# (renamed or removed source files) propagate to the install dir.
+	@# We don't wipe node_modules — that would force a slow reinstall
+	@# every time. The dep tree only changes with package.json edits.
+	@rm -rf '$(SHARE_DIR)/src'
 	@cp -R $(INSTALL_FILES) '$(SHARE_DIR)/'
-	@printf '==> Installing dependencies (this can take a moment)\n'
+	@printf '==> Installing dependencies\n'
 	@cd '$(SHARE_DIR)' && bun install --frozen-lockfile >/dev/null 2>&1 || \
 	  cd '$(SHARE_DIR)' && bun install
 	@printf '==> Writing launcher to %s\n' '$(LAUNCHER)'
@@ -92,6 +87,17 @@ $(LAUNCHER): $(INSTALL_FILES)
 	  'exec bun --conditions=browser --preload "$$PRELOAD" "$$ENTRY" --cwd "$$PWD" "$$@"' \
 	  > '$(LAUNCHER)'
 	@chmod +x '$(LAUNCHER)'
+	@printf '\n'
+	@printf 'Installed:  %s\n' '$(LAUNCHER)'
+	@printf 'Source:     %s\n' '$(SHARE_DIR)'
+	@printf '\n'
+	@case ":$$PATH:" in \
+	  *":$(BIN_DIR):"*) printf 'Run:        claude-tui\n' ;; \
+	  *) printf 'Note: %s is not on your PATH.\n' '$(BIN_DIR)' ; \
+	     printf '      Add this to your shell rc:\n' ; \
+	     printf '          export PATH="%s:$$PATH"\n' '$(BIN_DIR)' ; \
+	     printf '      Or run directly: %s\n' '$(LAUNCHER)' ;; \
+	esac
 
 uninstall:
 	@if [ -f '$(LAUNCHER)' ]; then \

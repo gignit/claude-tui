@@ -18,6 +18,7 @@ import { open, readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { DisplayItem } from "../agent/types.ts"
+import { stripAnsi } from "./ansi.ts"
 
 export interface SessionSummary {
   /** Session UUID (the .jsonl filename without extension). */
@@ -145,7 +146,11 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
               kind: "tool_result",
               id: nextId("res"),
               toolUseId: String(block.tool_use_id ?? ""),
-              output: stringifyToolResult(block.content),
+              // Strip ANSI: tool output captured during the original
+              // session may contain SGR color codes (e.g. /context's
+              // 256-color gradient). opentui's text renderer mangles
+              // those into visible parameter digits.
+              output: stripAnsi(stringifyToolResult(block.content)),
               isError: !!block.is_error,
               createdAt,
             })
@@ -158,7 +163,7 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
         items.push({
           kind: "user",
           id: nextId("user"),
-          text: userText,
+          text: stripAnsi(userText),
           createdAt,
         })
       }
@@ -193,9 +198,11 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
       items.push({
         kind: "assistant",
         id: nextId("asst"),
-        text: bubbleText,
+        // Defensive: strip ANSI here too. Assistant text shouldn't
+        // contain SGR but we've been surprised before.
+        text: stripAnsi(bubbleText),
         complete: true,
-        ...(thinking ? { thinking } : {}),
+        ...(thinking ? { thinking: stripAnsi(thinking) } : {}),
         ...(turnModel ? { model: turnModel } : {}),
         createdAt,
       })

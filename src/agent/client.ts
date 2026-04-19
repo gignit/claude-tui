@@ -19,6 +19,7 @@ import { query, type Query, type SDKMessage, type SDKUserMessage, type Options }
 import type { AgentEvent, DisplayItem, PermissionRequest } from "./types.ts"
 import { type AgentMode, modeFromSdk, modeToSdk } from "./modes.ts"
 import { dlog, isDebugEnabled } from "../util/debug-log.ts"
+import { stripAnsi } from "../util/ansi.ts"
 
 export interface AgentClientConfig {
   cwd?: string
@@ -313,7 +314,11 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
               kind: "tool_result",
               id: nextDisplayId("res"),
               toolUseId: block.tool_use_id,
-              output: stringifyToolResult(block.content),
+              // Strip ANSI: tool output frequently contains SGR color
+              // codes (e.g. ripgrep's --color=auto, /context output's
+              // 256-color gradient) that opentui's text renderer eats
+              // partially, leaving garbled parameter digits as text.
+              output: stripAnsi(stringifyToolResult(block.content)),
               isError: !!block.is_error,
               createdAt: Date.now(),
             }
