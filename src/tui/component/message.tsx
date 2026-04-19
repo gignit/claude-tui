@@ -5,7 +5,7 @@
  */
 
 import { For, Show, createMemo } from "solid-js"
-import { useTheme } from "../context/theme.tsx"
+import { useTheme, useThemeContext } from "../context/theme.tsx"
 import { useExpand } from "../context/expand.tsx"
 import { modeLabel } from "../../agent/modes.ts"
 import {
@@ -55,19 +55,31 @@ function UserBubble(props: { msg: UserDisplayMessage }) {
 
 function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
   const theme = useTheme()
+  const { markdownStyle } = useThemeContext()
   // The assistant is the *primary* voice in the conversation; everything
   // else (user input, tool calls, system notices) is a side-channel that
   // gets a colored left border to attribute it. Assistant text renders
   // flush against the left edge so it reads as the main flow rather
-  // than a quoted aside. Streaming "..." and the model+mode stamp follow
-  // the same flat layout.
+  // than a quoted aside.
+  //
+  // We use opentui's <markdown> intrinsic so headings, lists, tables,
+  // bold/italic, links, and inline code render with proper styling
+  // instead of as raw `**text**` etc. The `streaming` flag tells the
+  // parser to keep the trailing block unstable while text is still
+  // arriving, so we don't lock in a half-parsed table or list.
   return (
     <box marginTop={1} flexShrink={0}>
       <Show when={props.msg.thinking}>
         <text fg={theme.thinking}>{prefix("thinking: ", props.msg.thinking ?? "")}</text>
       </Show>
       <Show when={props.msg.text}>
-        <text fg={theme.text}>{props.msg.text}</text>
+        <markdown
+          content={props.msg.text}
+          syntaxStyle={markdownStyle}
+          fg={theme.text}
+          conceal={true}
+          streaming={!props.msg.complete}
+        />
       </Show>
       <Show when={!props.msg.complete}>
         <text fg={theme.thinking}>{"..."}</text>
