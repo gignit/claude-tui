@@ -1,0 +1,11 @@
+#!/usr/bin/env -S bun --conditions=browser
+// We pass --conditions=browser so Bun resolves solid-js to its
+// fine-grained reactive build (dist/solid.js) instead of its SSR build
+// (dist/server.js). The SSR build cleans up entire owner trees on every
+// store change, which breaks dialog interactions (they dispose the
+// agent provider's subprocess). See tsconfig.json for context.
+import { join, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
+
+const here = dirname(fileURLToPath(import.meta.url))
+await import(join(here, "..", "src", "index.tsx"))

@@ -1,0 +1,7 @@
+preload = ["@opentui/solid/preload"]
+
+[install]
+# Hoisted layout keeps every dep at the top-level node_modules so
+# `import.meta.resolveSync(...)` and PATH-style resolution from the
+# launcher work without per-package nesting.
+linker = "hoisted"

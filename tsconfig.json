@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
+    // CRITICAL: Solid ships two builds in its package exports — "node"
+    // resolves to dist/server.js (SSR; cleans up entire owner trees on
+    // every store change) and "browser" resolves to dist/solid.js
+    // (client/fine-grained reactive). Without forcing "browser" here,
+    // Bun picks the SSR build by default and any store update disposes
+    // unrelated component scopes (e.g. opening a dialog kills the agent
+    // provider's subprocess). Opencode does the same — see their tsconfig.
+    "customConditions": ["browser"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "types": ["bun"],
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["src/**/*", "bin/**/*"]
+}

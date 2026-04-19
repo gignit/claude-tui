@@ -1,0 +1,50 @@
+# =============================================================================
+# claude-tui — .gitignore
+# =============================================================================
+# Goals:
+#   - Commit: source, config, lockfile, docs.
+#   - Ignore: dependencies, build output, runtime logs/state, secrets,
+#             machine-local tooling caches, editor scratch.
+# Run `git status --ignored` after editing to verify nothing important
+# slipped through.
+
+# --- Dependencies -----------------------------------------------------------
+node_modules/
+
+# --- Runtime output ---------------------------------------------------------
+# `--debug` writes here; never useful to commit.
+logs/
+*.log
+
+# --- Build / compile cache --------------------------------------------------
+dist/
+build/
+out/
+coverage/
+*.tsbuildinfo
+
+# --- Bun --------------------------------------------------------------------
+.bun/
+# NOTE: bun.lock is intentionally NOT ignored — this project is an app,
+# not a library, and we want reproducible installs.
+
+# --- Secrets / per-user config ---------------------------------------------
+# Anything starting with .env should be assumed sensitive.
+.env
+.env.*
+!.env.example
+
+# --- OS junk ----------------------------------------------------------------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# --- Editor / IDE scratch ---------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+*.tmp

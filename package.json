@@ -1,0 +1,28 @@
+{
+  "name": "claude-tui",
+  "version": "0.1.0",
+  "description": "Claude Code TUI — open-source terminal UI for Claude Code, built on Anthropic's official Agent SDK. Select-to-copy, full session scrollback with resume, slash-command menu, mode toggling, Pro/Max subscription auth.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "claude-tui": "./bin/claude-tui"
+  },
+  "scripts": {
+    "dev": "bun --conditions=browser src/index.tsx",
+    "start": "bun --conditions=browser src/index.tsx",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.114",
+    "@opentui/core": "^0.1.100",
+    "@opentui/solid": "^0.1.100",
+    "solid-js": "^1.9.12"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  }
+}
