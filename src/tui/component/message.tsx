@@ -4,11 +4,17 @@
  * state (Ctrl+O) and collapse to a one-line summary when shrunk.
  */
 
-import { Show } from "solid-js"
+import { For, Show, createMemo } from "solid-js"
 import { useTheme } from "../context/theme.tsx"
 import { useExpand } from "../context/expand.tsx"
 import { modeLabel } from "../../agent/modes.ts"
-import { displayToolName, fallbackInputJson, formatToolInput } from "../../util/tool-format.ts"
+import {
+  displayToolName,
+  formatToolInput,
+  jsonExcluding,
+  type RichPreview,
+} from "../../util/tool-format.ts"
+import { lineDiff } from "../../util/diff.ts"
 import type {
   AssistantDisplayMessage,
   DisplayItem,
@@ -95,19 +101,22 @@ function ToolCallBlock(props: { item: ToolCallDisplayItem }) {
   // visually in sync — clicking either side flips both.
   const onClick = () => expand.toggleOne(props.item.toolUseId)
   const isExpanded = () => expand.isExpanded(props.item.toolUseId)
-  // Per-tool formatter turns the parsed input into a headline + details.
+  // Per-tool formatter: returns a headline + zero-or-more rich previews.
   // displayToolName strips the mcp__ prefix into a friendlier "server/tool".
-  const formatted = () => formatToolInput(props.item.toolName, props.item.input)
+  const formatted = createMemo(() => formatToolInput(props.item.toolName, props.item.input))
   const niceName = () => displayToolName(props.item.toolName)
-  // Compose: "  ToolName · headline (truncated)"
   const header = () => {
     const head = formatted().headline
     const headlinePart = head ? "  ·  " + truncateLine(head, HEADLINE_MAX) : ""
     return "  " + niceName() + headlinePart + (props.item.resolved ? "" : " ...")
   }
-  // Details to show when expanded. If the formatter didn't supply any
-  // (e.g. Read where the headline says it all), fall back to pretty JSON.
-  const expandedBody = () => formatted().details ?? fallbackInputJson(props.item.input)
+  // Keys consumed by previews are excluded from the JSON view (the
+  // preview re-renders them in a richer way).
+  const previews = () => formatted().previews ?? []
+  const consumedAttrs = createMemo(
+    () => new Set(previews().flatMap((p) => p.attrs)),
+  )
+  const jsonBody = () => jsonExcluding(props.item.input, consumedAttrs())
   return (
     <box
       marginTop={1}
@@ -119,10 +128,58 @@ function ToolCallBlock(props: { item: ToolCallDisplayItem }) {
     >
       <text fg={theme.tool}>{header()}</text>
       <Show when={isExpanded()}>
-        <text fg={theme.toolMuted}>{expandedBody()}</text>
+        <box flexDirection="column" gap={1}>
+          {/* Always show the JSON of the input, minus consumed keys. */}
+          <text fg={theme.toolMuted}>{jsonBody()}</text>
+          {/* Then render each rich preview for the consumed keys. */}
+          <For each={previews()}>{(p) => <ToolPreview preview={p} />}</For>
+        </box>
       </Show>
     </box>
   )
+}
+
+/**
+ * Renders one RichPreview from a tool formatter. Pattern-matches on
+ * `kind` and applies the appropriate theme colors.
+ *
+ * - "diff": unified-style line diff with red removed / green added
+ *   prefixed with `-`/`+`, unchanged lines dim with two-space gutter.
+ * - "code": fixed-width content shown in normal text color, no escapes.
+ *   Useful for things like Write's content or Task agent's prompt where
+ *   showing the JSON-escaped \n would be unreadable.
+ */
+function ToolPreview(props: { preview: RichPreview }) {
+  const theme = useTheme()
+  const p = props.preview
+  if (p.kind === "diff") {
+    const lines = lineDiff(p.before, p.after)
+    return (
+      <box flexDirection="column" flexShrink={0}>
+        <Show when={p.label}>
+          <text fg={theme.textDim}>{`[${p.label}]`}</text>
+        </Show>
+        <For each={lines}>
+          {(line) => {
+            if (line.kind === "removed") return <text fg={theme.error}>{"- " + line.text}</text>
+            if (line.kind === "added") return <text fg={theme.success}>{"+ " + line.text}</text>
+            return <text fg={theme.textDim}>{"  " + line.text}</text>
+          }}
+        </For>
+      </box>
+    )
+  }
+  if (p.kind === "code") {
+    return (
+      <box flexDirection="column" flexShrink={0}>
+        <Show when={p.label}>
+          <text fg={theme.textDim}>{`[${p.label}]`}</text>
+        </Show>
+        <text fg={theme.text}>{p.content}</text>
+      </box>
+    )
+  }
+  return null
 }
 
 function truncateLine(s: string, max: number): string {

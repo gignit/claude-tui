@@ -1,30 +1,63 @@
 /**
  * Per-tool input formatting for the scrollback's tool-call blocks.
  *
- * Each tool gets two views:
- *   - **headline** — a short, single-line summary shown next to the
- *     tool name in the collapsed (and expanded) header. e.g.
+ * Each tool gets:
+ *   - **headline** — short single-line summary shown next to the tool
+ *     name in the collapsed (and expanded) header. e.g.
  *     `Read · auth/context_test.go (lines 1-200)`
- *   - **details** — a longer, multi-line block shown beneath the
- *     header when the tool is expanded. May be omitted if the headline
- *     already says everything (e.g. Read shows path + range and that's
- *     enough; Bash needs the full command in details).
+ *   - **previews** (optional) — rich renderings for specific input
+ *     attributes. Each preview "consumes" a list of input keys: those
+ *     keys are EXCLUDED from the JSON view and the rich preview is
+ *     rendered in their place after the JSON.
+ *
+ * Default expanded view is always pretty JSON of the input (minus any
+ * attributes consumed by previews). This keeps the on-wire shape
+ * visible (so the user can see exactly what the model sent) while
+ * letting individual fields opt in to nicer rendering.
  *
  * Adding a new tool: drop a new entry into FORMATTERS keyed by the
- * raw tool name. Return `{ headline?, details? }`. Anything you don't
- * register falls back to `defaultFormatter`, which is good enough that
- * unmapped tools still look reasonable.
+ * raw tool name. Returning just `{ headline }` is fine — the JSON
+ * view is the default expanded body. Return `previews` only when
+ * a specific attribute reads better as code, a diff, etc.
  *
  * Display name handling: `displayToolName` strips the `mcp__server__`
  * prefix on MCP tools and shows them as `server/tool` (e.g.
  * `mcp__coder__go_function` becomes `coder/go_function`).
  */
 
+/**
+ * Rich preview kinds. The renderer in message.tsx pattern-matches on
+ * `kind` to apply the right styling. Add new kinds here when you need
+ * a new presentation (e.g. "table", "tree", "image").
+ */
+export type RichPreview =
+  | {
+      kind: "diff"
+      /** Input attribute names this preview replaces in the JSON view. */
+      attrs: string[]
+      /** Optional caption shown above the diff. */
+      label?: string
+      before: string
+      after: string
+    }
+  | {
+      kind: "code"
+      attrs: string[]
+      label?: string
+      content: string
+      /** Hint for syntax highlighting (currently unused; reserved). */
+      language?: string
+    }
+
 export interface ToolFormatted {
   /** One-line summary shown next to the tool name. Truncated by the renderer. */
   headline?: string
-  /** Multi-line detail shown when the tool block is expanded. */
-  details?: string
+  /**
+   * Optional rich rendering of specific input attributes. Each
+   * preview's `attrs` are excluded from the JSON view and the
+   * rendering shows after the JSON in the expanded body.
+   */
+  previews?: RichPreview[]
 }
 
 export type ToolFormatter = (input: Record<string, unknown>) => ToolFormatted
@@ -60,20 +93,7 @@ function compact(s: string): string {
 }
 
 /**
- * Pretty-stringify a value for the details panel. Long strings stay
- * raw (they may be code/text); objects get JSON.stringify with indent.
- */
-function pretty(value: unknown): string {
-  if (typeof value === "string") return value
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
-}
-
-/**
- * Format a Read-style line range. Three cases:
+ * Format a Read-style line range for headlines. Three cases:
  *   - both offset and limit: `(lines 100-149)`
  *   - limit only:            `(first 50 lines)`
  *   - offset only:           `(from line 100)`
@@ -117,9 +137,6 @@ const FORMATTERS: Record<string, ToolFormatter> = {
       // Description (when set by the model) is the short summary; fall
       // back to the first line of the command itself.
       headline: desc || compact(firstLine(cmd)),
-      // Show the full command in expanded view, even when there's a
-      // description — the description is the *intent*, not the action.
-      details: cmd,
     }
   },
 
@@ -135,7 +152,11 @@ const FORMATTERS: Record<string, ToolFormatter> = {
     const byteCount = content.length
     return {
       headline: `${shortPath(path)} (${lineCount} lines, ${byteCount} bytes)`,
-      details: content,
+      previews: [
+        // Pull `content` out of the JSON view — it's almost always a
+        // multi-line code blob and looks awful with literal \n.
+        { kind: "code", attrs: ["content"], label: "content", content },
+      ],
     }
   },
   Edit: (i) => {
@@ -145,7 +166,15 @@ const FORMATTERS: Record<string, ToolFormatter> = {
     const newStr = String(i["new_string"] ?? "")
     return {
       headline: `${shortPath(path)}${replaceAll ? " (replace_all)" : ""}`,
-      details: `--- old\n${oldStr}\n+++ new\n${newStr}`,
+      previews: [
+        {
+          kind: "diff",
+          attrs: ["old_string", "new_string"],
+          label: "diff",
+          before: oldStr,
+          after: newStr,
+        },
+      ],
     }
   },
 
@@ -153,13 +182,7 @@ const FORMATTERS: Record<string, ToolFormatter> = {
   Grep: (i) => {
     const pattern = String(i["pattern"] ?? "")
     const path = i["path"] ? ` in ${shortPath(String(i["path"]))}` : ""
-    const glob = i["glob"] ? ` glob=${String(i["glob"])}` : ""
-    const type = i["type"] ? ` type=${String(i["type"])}` : ""
-    const mode = i["output_mode"] ? ` mode=${String(i["output_mode"])}` : ""
-    return {
-      headline: `/${pattern}/${path}${glob}${type}`,
-      details: `pattern: ${pattern}${path}${glob}${type}${mode}` + (i["-i"] ? "  -i" : "") + (i["-n"] ? "  -n" : ""),
-    }
+    return { headline: `/${pattern}/${path}` }
   },
   Glob: (i) => {
     const pattern = String(i["pattern"] ?? "")
@@ -168,24 +191,12 @@ const FORMATTERS: Record<string, ToolFormatter> = {
   },
 
   // --- Tasks -------------------------------------------------------------
-  TaskCreate: (i) => {
-    const subject = String(i["subject"] ?? "")
-    const description = String(i["description"] ?? "")
-    const activeForm = String(i["activeForm"] ?? "")
-    const detailLines = [`subject: ${subject}`]
-    if (description) detailLines.push(`description: ${description}`)
-    if (activeForm) detailLines.push(`activeForm: ${activeForm}`)
-    return { headline: subject, details: detailLines.join("\n") }
-  },
+  TaskCreate: (i) => ({ headline: String(i["subject"] ?? "") }),
   TaskUpdate: (i) => {
     const id = String(i["taskId"] ?? "")
     const status = String(i["status"] ?? "")
-    const subject = typeof i["subject"] === "string" ? ` ${(i["subject"] as string)}` : ""
-    return {
-      headline: `#${id} → ${status}${subject}`,
-      // Useful when the update bundles other field changes.
-      details: pretty(i),
-    }
+    const subject = typeof i["subject"] === "string" ? ` ${i["subject"] as string}` : ""
+    return { headline: `#${id} → ${status}${subject}` }
   },
   TaskList: () => ({ headline: "(list all)" }),
   TaskGet: (i) => ({ headline: `#${String(i["taskId"] ?? "")}` }),
@@ -199,12 +210,12 @@ const FORMATTERS: Record<string, ToolFormatter> = {
     const prompt = String(i["prompt"] ?? "")
     return {
       headline: `${subagent}${desc}`,
-      details: prompt || pretty(i),
+      previews: prompt ? [{ kind: "code", attrs: ["prompt"], label: "prompt", content: prompt }] : [],
     }
   },
   Skill: (i) => {
     const skill = String(i["skill"] ?? "")
-    const args = typeof i["args"] === "string" ? ` ${(i["args"] as string)}` : ""
+    const args = typeof i["args"] === "string" ? ` ${i["args"] as string}` : ""
     return { headline: `${skill}${args}` }
   },
 
@@ -212,16 +223,13 @@ const FORMATTERS: Record<string, ToolFormatter> = {
   ToolSearch: (i) => {
     const q = String(i["query"] ?? "")
     const max = i["max_results"]
-    return {
-      headline: `"${q}"${max !== undefined ? ` (max ${max})` : ""}`,
-    }
+    return { headline: `"${q}"${max !== undefined ? ` (max ${max})` : ""}` }
   },
 
   // --- Web ---------------------------------------------------------------
   WebFetch: (i) => {
     const url = String(i["url"] ?? "")
-    const prompt = String(i["prompt"] ?? "")
-    return { headline: url, details: prompt ? `prompt: ${prompt}` : undefined }
+    return { headline: url }
   },
   WebSearch: (i) => {
     const q = String(i["query"] ?? "")
@@ -234,9 +242,12 @@ const FORMATTERS: Record<string, ToolFormatter> = {
     const cellId = i["cell_id"] ? ` cell=${String(i["cell_id"])}` : ""
     const cellType = i["cell_type"] ? ` (${String(i["cell_type"])})` : ""
     const editMode = i["edit_mode"] ? ` mode=${String(i["edit_mode"])}` : ""
+    const newSource = typeof i["new_source"] === "string" ? (i["new_source"] as string) : ""
     return {
       headline: `${shortPath(path)}${cellId}${cellType}${editMode}`,
-      details: typeof i["new_source"] === "string" ? (i["new_source"] as string) : undefined,
+      previews: newSource
+        ? [{ kind: "code", attrs: ["new_source"], label: "new source", content: newSource }]
+        : [],
     }
   },
 
@@ -287,19 +298,13 @@ function mcpFormatter(input: Record<string, unknown>): ToolFormatted {
       if (segments.length >= 2) break
     }
   }
-  return { headline: segments.join("  "), details: pretty(input) }
+  return { headline: segments.join("  ") }
 }
 
 // -----------------------------------------------------------------------------
 // Default fallback
 // -----------------------------------------------------------------------------
 
-/**
- * Same idea as the MCP fallback: look for the first useful field
- * across a list of likely candidates. If nothing matches, fall back to
- * "(<n> args)" so the user at least knows the tool was called with
- * SOMETHING — better than printing `{`.
- */
 const DEFAULT_HEADLINE_KEYS = [
   "command",
   "description",
@@ -319,14 +324,11 @@ function defaultFormatter(input: Record<string, unknown>): ToolFormatted {
   for (const key of DEFAULT_HEADLINE_KEYS) {
     const v = input[key]
     if (typeof v === "string" && v.length > 0) {
-      return { headline: `${key}=${compact(v)}`, details: pretty(input) }
+      return { headline: `${key}=${compact(v)}` }
     }
   }
   const argCount = Object.keys(input).length
-  return {
-    headline: argCount === 0 ? "(no args)" : `(${argCount} args)`,
-    details: pretty(input),
-  }
+  return { headline: argCount === 0 ? "(no args)" : `(${argCount} args)` }
 }
 
 // -----------------------------------------------------------------------------
@@ -347,9 +349,21 @@ export function formatToolInput(toolName: string, input: Record<string, unknown>
 }
 
 /**
- * Helper: pretty JSON of an unknown input object. Used by the renderer
- * when a formatter doesn't supply `details`.
+ * Pretty-print the input object for the expanded view, OMITTING the
+ * keys consumed by previews. Returns "{}" when nothing is left.
  */
-export function fallbackInputJson(input: Record<string, unknown>): string {
-  return pretty(input)
+export function jsonExcluding(input: Record<string, unknown>, excluded: ReadonlySet<string>): string {
+  const filtered: Record<string, unknown> = {}
+  let count = 0
+  for (const [k, v] of Object.entries(input)) {
+    if (excluded.has(k)) continue
+    filtered[k] = v
+    count++
+  }
+  if (count === 0) return "{}"
+  try {
+    return JSON.stringify(filtered, null, 2)
+  } catch {
+    return String(filtered)
+  }
 }
