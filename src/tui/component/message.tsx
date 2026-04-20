@@ -381,9 +381,14 @@ function truncateLine(s: string, max: number): string {
 
 function SystemNotice(props: { item: SystemNoticeDisplayItem }) {
   const theme = useTheme()
+  // Default to "debug" so any pre-existing callsite that doesn't
+  // pass a tone still gets the dim look it had before this prop
+  // existed. New callers should opt into "info" for user-facing
+  // notices that should be easy to read.
+  const fg = () => (props.item.tone === "info" ? theme.textMuted : theme.textDim)
   return (
     <box marginTop={1} flexShrink={0}>
-      <text fg={theme.textDim}>{"  " + props.item.text}</text>
+      <text fg={fg()}>{"  " + props.item.text}</text>
     </box>
   )
 }

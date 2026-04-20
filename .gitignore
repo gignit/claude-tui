@@ -48,3 +48,9 @@ desktop.ini
 *~
 *.bak
 *.tmp
+
+# --- Local dev-tool scratch -------------------------------------------------
+# Per-developer code-exploration / agent-tooling configs. Not part of
+# the project.
+.opencode/
+AGENTS.md

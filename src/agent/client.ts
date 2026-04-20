@@ -16,7 +16,13 @@ import { statSync } from "node:fs"
 import { delimiter, join } from "node:path"
 import { homedir } from "node:os"
 import { query, type Query, type SDKMessage, type SDKUserMessage, type Options } from "@anthropic-ai/claude-agent-sdk"
-import type { AgentEvent, DisplayItem, PermissionRequest } from "./types.ts"
+import type {
+  AgentEvent,
+  AskUserQuestionItem,
+  DisplayItem,
+  PermissionRequest,
+  QuestionRequest,
+} from "./types.ts"
 import { type AgentMode, modeFromSdk, modeToSdk } from "./modes.ts"
 import { dlog, isDebugEnabled } from "../util/debug-log.ts"
 import { stripAnsi } from "../util/ansi.ts"
@@ -53,6 +59,16 @@ export interface AgentClientConfig {
    * which is fine for a personal CLI but the TUI should override this.
    */
   onPermissionRequest?: (req: PermissionRequest) => Promise<boolean>
+  /**
+   * Called when the SDK invokes the built-in `AskUserQuestion` tool.
+   * Return a `Record<question, label-or-text>` map of answers, OR
+   * null to cancel (treated as a denial).
+   *
+   * If unset, AskUserQuestion calls fall through to the regular
+   * permission path — which works structurally but means the user
+   * can only allow/deny, not actually answer the question.
+   */
+  onQuestionRequest?: (req: QuestionRequest) => Promise<Record<string, string> | null>
   /** Hook for every translated display event. */
   onEvent: (evt: AgentEvent) => void
 }
@@ -169,10 +185,59 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
         : {}),
     },
     permissionMode: config.permissionMode ?? "default",
+    // Ask the SDK for SDKPartialAssistantMessage events so assistant
+    // text streams in token-by-token. Without this the only signal we
+    // get for assistant text is the end-of-turn `assistant` message,
+    // which makes the UI feel frozen during long responses. See
+    // translateSdkMessage's `stream_event` case for the per-delta
+    // accumulator that turns these events back into the running text
+    // we feed to the display.
+    includePartialMessages: true,
     ...(config.allowedTools && config.allowedTools.length > 0
       ? { allowedTools: config.allowedTools }
       : {}),
     canUseTool: async (toolName, input, opts) => {
+      // Special-case the built-in AskUserQuestion tool. The Claude
+      // binary normally renders a TUI picker for this, but when the
+      // binary runs as an SDK subprocess it has no terminal, so the
+      // picker silently fails and the tool returns an empty answer.
+      // The SDK's intended escape hatch (per
+      // https://code.claude.com/docs/en/agent-sdk/user-input): pre-fill
+      // the answers in `updatedInput.answers`. The tool then short-
+      // circuits its picker and returns those answers as the result.
+      if (toolName === "AskUserQuestion") {
+        const handler = config.onQuestionRequest
+        const questions = parseAskUserQuestionInput(input)
+        if (!handler || questions.length === 0) {
+          // No handler wired up, or the input shape didn't match what
+          // we expect — fall through to the binary's pickerless path
+          // by allowing the call through unchanged. This will produce
+          // the empty-answer result we saw before, but at least
+          // doesn't crash anything.
+          return { behavior: "allow", updatedInput: input }
+        }
+        const answers = await new Promise<Record<string, string> | null>((resolve) => {
+          const request: QuestionRequest = {
+            questions,
+            toolUseId: opts.toolUseID,
+            resolve,
+          }
+          handler(request).then(resolve).catch(() => resolve(null))
+        })
+        if (answers === null) {
+          return { behavior: "deny", message: "user cancelled the question" }
+        }
+        return {
+          behavior: "allow",
+          updatedInput: {
+            // Pass the original questions back unchanged — the tool's
+            // result includes them so Claude can correlate questions
+            // to answers.
+            questions: (input as { questions?: unknown }).questions ?? [],
+            answers,
+          },
+        }
+      }
       const handler = config.onPermissionRequest
       if (!handler) return { behavior: "allow", updatedInput: input }
       const allowed = await new Promise<boolean>((resolve) => {
@@ -204,6 +269,10 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
           kind: "system",
           id: nextDisplayId("sys"),
           text: chunk.trimEnd(),
+          // Subprocess stderr is technical noise; render dim so it
+          // sits in the background. User-facing notices (/help,
+          // /scroll, /markdown, etc.) default to "info" tone.
+          tone: "debug",
           createdAt: Date.now(),
         },
       })
@@ -214,6 +283,23 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
 
   // Track in-flight assistant message so streaming text appends to it.
   let currentAssistantId: string | null = null
+  // Per-turn streaming buffers. These accumulate text/thinking deltas
+  // arriving via `stream_event` SDK messages so we can emit a running
+  // total to the display on every chunk. Reset on every `message_start`
+  // — the SDK may send several assistant turns within one user request
+  // (e.g. text → tool_use → text after tool result), each gets its
+  // own message_start so the buffers don't bleed across them.
+  // The end-of-turn `assistant` message (which contains the full
+  // already-streamed text) is harmless: appendAssistantText replaces
+  // the bubble's text via patch, so re-setting it to the same value
+  // is a no-op render.
+  let streamingTextBuf = ""
+  let streamingThinkingBuf = ""
+  // Captured from the most recent `message_start` event so each chunk
+  // emitted during streaming carries the right model attribution. The
+  // final `assistant` event also has this — keeping it on the buffer
+  // means we don't have to re-stamp the bubble at end-of-turn.
+  let streamingTurnModel: string | undefined
   // Map SDK toolUseID → display tool_call id, so result events can find their call.
   const toolCallByUseId = new Map<string, string>()
   // Best-effort cache of the current agent mode. Updated on:
@@ -373,8 +459,43 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
       }
 
       case "stream_event": {
-        // Optional partial-message events. We ignore them; the assistant
-        // event already gives us text per turn-completion.
+        // Partial assistant message events (the Anthropic SSE stream
+        // surfaced via SDKPartialAssistantMessage). We handle text and
+        // thinking deltas to drive live streaming of the bubble. Tool
+        // use blocks are NOT streamed here — their JSON arrives as
+        // input_json_delta chunks that we'd have to accumulate and
+        // parse, and the end-of-turn `assistant` event has the fully
+        // assembled tool_use block already, so it's simpler to wait
+        // for that and let the existing tool-call handling fire.
+        const evt = msg.event
+        if (evt.type === "message_start") {
+          // Reset per-turn buffers and snag the model name. The SDK
+          // sends one `message_start` per assistant turn within a
+          // request; resetting keeps text from a prior turn out of
+          // the next bubble.
+          streamingTextBuf = ""
+          streamingThinkingBuf = ""
+          streamingTurnModel = typeof evt.message.model === "string" ? evt.message.model : undefined
+          break
+        }
+        if (evt.type === "content_block_delta") {
+          const delta = evt.delta
+          if (delta.type === "text_delta") {
+            streamingTextBuf += delta.text
+            appendAssistantText(streamingTextBuf, streamingTurnModel, currentMode)
+          } else if (delta.type === "thinking_delta") {
+            streamingThinkingBuf += delta.thinking
+            appendAssistantThinking(streamingThinkingBuf, streamingTurnModel, currentMode)
+          }
+          // input_json_delta / citations_delta / signature_delta —
+          // ignored. tool input streaming would require accumulating
+          // the JSON fragments and re-parsing on every chunk; the
+          // end-of-turn `assistant` event has the parsed input ready.
+          break
+        }
+        // message_delta, content_block_start, content_block_stop,
+        // message_stop — useful for fine-grained UI but not needed
+        // for basic streaming text. Ignore.
         break
       }
 
@@ -588,4 +709,42 @@ function stringifyToolResult(content: unknown): string {
       return safeStringify(part)
     })
     .join("\n")
+}
+
+/**
+ * Defensive parser for the AskUserQuestion tool input. The SDK schema
+ * is well-defined but we still validate so a malformed payload (e.g.
+ * options missing fields) doesn't crash the dialog. Returns an empty
+ * array if anything's badly shaped — caller falls back to letting the
+ * tool run unanswered.
+ */
+function parseAskUserQuestionInput(input: unknown): AskUserQuestionItem[] {
+  if (!input || typeof input !== "object") return []
+  const raw = (input as { questions?: unknown }).questions
+  if (!Array.isArray(raw)) return []
+  const out: AskUserQuestionItem[] = []
+  for (const q of raw) {
+    if (!q || typeof q !== "object") continue
+    const obj = q as Record<string, unknown>
+    const question = typeof obj["question"] === "string" ? obj["question"] : ""
+    const header = typeof obj["header"] === "string" ? obj["header"] : ""
+    const optionsRaw = obj["options"]
+    if (!question || !Array.isArray(optionsRaw)) continue
+    const options = optionsRaw
+      .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
+      .map((o) => ({
+        label: typeof o["label"] === "string" ? o["label"] : "",
+        description: typeof o["description"] === "string" ? o["description"] : "",
+        ...(typeof o["preview"] === "string" ? { preview: o["preview"] as string } : {}),
+      }))
+      .filter((o) => o.label.length > 0)
+    if (options.length === 0) continue
+    out.push({
+      question,
+      header,
+      options,
+      multiSelect: obj["multiSelect"] === true,
+    })
+  }
+  return out
 }

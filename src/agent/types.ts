@@ -74,6 +74,17 @@ export interface SystemNoticeDisplayItem {
   kind: "system"
   id: DisplayMessageId
   text: string
+  /**
+   * Visual weight for the notice.
+   *   - "info" (default for user-facing notices like /help, /scroll)
+   *     — body text color, easy to read.
+   *   - "debug" — dim grey; used for SDK subprocess stderr in --debug
+   *     mode where the content is technical and the user is scanning,
+   *     not reading.
+   * Default in the renderer is "debug" so legacy callsites that don't
+   * pass a tone keep their previous look.
+   */
+  tone?: "info" | "debug"
   createdAt: number
 }
 
@@ -99,6 +110,7 @@ export type AgentEvent =
   | { type: "updated"; id: DisplayMessageId; patch: Partial<DisplayItem> }
   | { type: "status"; status: AgentStatus }
   | { type: "permission"; request: PermissionRequest }
+  | { type: "question"; request: QuestionRequest }
   | { type: "model"; model: string }
   | { type: "mode"; mode: import("./modes.ts").AgentMode }
   | { type: "session"; sessionId: string }
@@ -118,4 +130,55 @@ export interface PermissionRequest {
   description?: string
   toolUseId: string
   resolve: (allow: boolean) => void
+}
+
+/**
+ * One option within an AskUserQuestion question.
+ *
+ * Mirrors the shape the SDK gives us in `tool_use.input.questions[].options[]`.
+ * `preview` is filled when the host opts into `toolConfig.askUserQuestion.previewFormat`
+ * (we don't, currently — left here for future use).
+ */
+export interface AskUserQuestionOption {
+  label: string
+  description: string
+  preview?: string
+}
+
+/**
+ * One question in an AskUserQuestion tool call. The SDK can deliver
+ * 1–4 of these in a single tool_use.
+ */
+export interface AskUserQuestionItem {
+  /** Full question text (e.g., "Which library should we use for date formatting?"). */
+  question: string
+  /** Short tag/header (max 12 chars per the SDK schema). */
+  header: string
+  /** 2–4 mutually-exclusive choices Claude generated. */
+  options: AskUserQuestionOption[]
+  /** When true, the user can pick more than one option. */
+  multiSelect: boolean
+}
+
+/**
+ * In-flight AskUserQuestion request. Created in agent/client.ts when
+ * the SDK calls `canUseTool` with `toolName === "AskUserQuestion"`,
+ * surfaced to the UI via the agent context, resolved when the user
+ * picks options in the question dialog.
+ *
+ * `resolve` takes either:
+ *   - a `Record<question, label-or-text>` map of answers per the
+ *     SDK's expected output shape, or
+ *   - `null` to cancel (treated as a denial — the underlying tool
+ *     call gets `{behavior: "deny"}`).
+ *
+ * The keys of `answers` MUST be the exact `question` strings from
+ * the request; the SDK matches answers to questions by key.
+ * For multiSelect questions, join multiple labels with `", "`.
+ * For "Other" / free-text input, use the typed string directly.
+ */
+export interface QuestionRequest {
+  questions: AskUserQuestionItem[]
+  toolUseId: string
+  resolve: (answers: Record<string, string> | null) => void
 }

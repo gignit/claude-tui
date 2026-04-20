@@ -33,6 +33,7 @@ import { useSettings } from "../context/settings.tsx"
 import { MessageView } from "../component/message.tsx"
 import { Prompt } from "../component/prompt.tsx"
 import { StatusLine } from "../component/status-line.tsx"
+import { DialogQuestion } from "../component/dialog-question.tsx"
 import { dlog } from "../../util/debug-log.ts"
 import { copyToClipboard } from "../../util/clipboard.ts"
 import { createScrollAccel } from "../../util/scroll.ts"
@@ -87,17 +88,38 @@ export function Chat() {
       evt.preventDefault()
       return
     }
-    // Permission prompt intercepts y/n before global bindings.
+    // While the AskUserQuestion dialog is up, it owns the keyboard.
+    // Don't run any global handler so its own arrow/Enter/Tab/etc.
+    // bindings aren't shadowed by chat scroll or expand.
+    if (agent.pendingQuestion()) {
+      return
+    }
+    // Permission prompt intercepts y/n/Esc before global bindings.
+    // We have to call preventDefault + stopPropagation because the
+    // textarea (still mounted, just visually disabled) ALSO receives
+    // the keypress through its own handler — without these the `y`
+    // resolves the permission AND lands as a typed char in the prompt.
     const req = agent.pendingPermission()
     if (req) {
       if (evt.name === "y") {
         req.resolve(true)
+        evt.preventDefault()
+        evt.stopPropagation()
         return
       }
       if (evt.name === "n" || evt.name === "escape") {
         req.resolve(false)
+        evt.preventDefault()
+        evt.stopPropagation()
         return
       }
+      // Any other key while permission is pending: swallow it so a
+      // user smashing Enter or typing while waiting for the dialog
+      // doesn't send half-thoughts as messages or fall through to
+      // global scroll bindings.
+      evt.preventDefault()
+      evt.stopPropagation()
+      return
     }
 
     const action = keybind.match({
@@ -129,6 +151,7 @@ export function Chat() {
   })
 
   const pending = agent.pendingPermission
+  const pendingQ = agent.pendingQuestion
 
   return (
     <box
@@ -167,6 +190,13 @@ export function Chat() {
         </scrollbox>
 
         <box flexShrink={0} flexDirection="column">
+          {/* AskUserQuestion dialog. Mounted via the same pending-
+              request pattern as the y/n permission overlay; only one
+              should ever be visible at a time since the SDK serializes
+              tool calls. */}
+          <Show when={pendingQ()}>
+            {(req) => <DialogQuestion request={req()} />}
+          </Show>
           <Show when={pending()}>
             {(req) => (
               <box
@@ -188,7 +218,7 @@ export function Chat() {
             )}
           </Show>
 
-          <Prompt disabled={!!pending()} />
+          <Prompt disabled={!!pending() || !!pendingQ()} />
           <StatusLine />
         </box>
       </box>

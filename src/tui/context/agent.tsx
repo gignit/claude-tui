@@ -15,7 +15,13 @@
 import { createContext, useContext, createSignal, onCleanup, type JSX } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { createAgentClient, type AgentClient, type AgentClientConfig } from "../../agent/client.ts"
-import type { AgentStatus, ContextUsage, DisplayItem, PermissionRequest } from "../../agent/types.ts"
+import type {
+  AgentStatus,
+  ContextUsage,
+  DisplayItem,
+  PermissionRequest,
+  QuestionRequest,
+} from "../../agent/types.ts"
 import { type AgentMode, nextMode } from "../../agent/modes.ts"
 import { saveState } from "../../util/state-store.ts"
 import { readSessionHistory } from "../../util/sessions.ts"
@@ -25,6 +31,12 @@ export interface AgentContextValue {
   items: DisplayItem[]
   status: () => AgentStatus
   pendingPermission: () => PermissionRequest | null
+  /**
+   * In-flight AskUserQuestion. The chat route mounts a question dialog
+   * whenever this is non-null; the dialog calls `request.resolve(...)`
+   * to feed answers back to the SDK.
+   */
+  pendingQuestion: () => QuestionRequest | null
   /** Active model id reported by the SDK, or null until the init event arrives. */
   model: () => string | null
   /** Active agent mode (Default ↔ Plan). Defaults to "default" until init. */
@@ -45,20 +57,21 @@ export interface AgentContextValue {
   resumeSession: (id: string) => Promise<void>
   listModels: () => Promise<Array<{ id: string; displayName: string; description: string }>>
   /** Append a local-only notice to the scrollback (does not hit the SDK). */
-  pushNotice: (text: string) => void
+  pushNotice: (text: string, tone?: "info" | "debug") => void
 }
 
 const AgentContext = createContext<AgentContextValue | null>(null)
 
 export interface AgentProviderProps {
   children: JSX.Element
-  config: Omit<AgentClientConfig, "onEvent" | "onPermissionRequest">
+  config: Omit<AgentClientConfig, "onEvent" | "onPermissionRequest" | "onQuestionRequest">
 }
 
 export function AgentProvider(props: AgentProviderProps) {
   const [items, setItems] = createStore<DisplayItem[]>([])
   const [status, setStatus] = createSignal<AgentStatus>({ kind: "idle" })
   const [pendingPermission, setPendingPermission] = createSignal<PermissionRequest | null>(null)
+  const [pendingQuestion, setPendingQuestion] = createSignal<QuestionRequest | null>(null)
   const [model, setModelSignal] = createSignal<string | null>(null)
   const [mode, setModeSignal] = createSignal<AgentMode>("default")
   const [sessionId, setSessionIdSignal] = createSignal<string | null>(null)
@@ -76,6 +89,7 @@ export function AgentProvider(props: AgentProviderProps) {
     setItems([])
     setStatus({ kind: "idle" })
     setPendingPermission(null)
+    setPendingQuestion(null)
     setSessionIdSignal(null)
     setContextUsageSignal(null)
     // Keep model/mode signals as-is; they get overwritten by the next
@@ -91,6 +105,20 @@ export function AgentProvider(props: AgentProviderProps) {
             resolve: (allow) => {
               setPendingPermission(null)
               resolve(allow)
+            },
+          })
+        }),
+      // Surface AskUserQuestion calls as a pending dialog. The
+      // DialogQuestion component (mounted by the chat route when
+      // pendingQuestion() is non-null) calls request.resolve() to
+      // either answer the questions or cancel.
+      onQuestionRequest: (req) =>
+        new Promise<Record<string, string> | null>((resolve) => {
+          setPendingQuestion({
+            ...req,
+            resolve: (answers) => {
+              setPendingQuestion(null)
+              resolve(answers)
             },
           })
         }),
@@ -110,6 +138,9 @@ export function AgentProvider(props: AgentProviderProps) {
             break
           case "permission":
             setPendingPermission(evt.request)
+            break
+          case "question":
+            setPendingQuestion(evt.request)
             break
           case "model":
             setModelSignal(evt.model)
@@ -143,6 +174,7 @@ export function AgentProvider(props: AgentProviderProps) {
     },
     status,
     pendingPermission,
+    pendingQuestion,
     model,
     mode,
     sessionId,
@@ -189,11 +221,12 @@ export function AgentProvider(props: AgentProviderProps) {
       }
     },
     listModels: async () => (client ? client.listModels() : []),
-    pushNotice: (text: string) => {
+    pushNotice: (text: string, tone: "info" | "debug" = "info") => {
       setItems(produce((arr) => arr.push({
         kind: "system",
         id: `local-${Date.now()}-${arr.length}`,
         text,
+        tone,
         createdAt: Date.now(),
       })))
     },

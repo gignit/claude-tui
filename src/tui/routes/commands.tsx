@@ -46,23 +46,11 @@ function buildSpecs(deps: BuiltinDeps): CommandSpec[] {
     {
       value: "app.help",
       title: "Show help",
-      description: "List local commands",
+      description: "List local commands and key bindings",
       category: "App",
       slash: { name: "help", aliases: ["?"] },
       onSelect: () => {
-        agent.pushNotice(
-          [
-            "claude-tui local commands:",
-            "  /help                    this message",
-            "  /models                  pick a model",
-            "  /sessions                switch sessions for the current project",
-            "  /menu                    open the command menu (also Ctrl+K)",
-            "  /scroll <n>              set mouse-wheel scroll speed",
-            "  /markdown [on|off]       toggle markdown rendering of assistant text",
-            "  /markdown-stream [on|off]  render markdown live (on) or only when complete (off)",
-            "Anything else starting with / is forwarded to claude.",
-          ].join("\n"),
-        )
+        agent.pushNotice(renderHelp(command.visible()))
         // Pop any palette/dialog that may have opened this command,
         // so the user is back at a clean prompt.
         dialog.clear()
@@ -169,4 +157,65 @@ function parseToggleArg(args: string | undefined, current: boolean): boolean {
   if (v === "on" || v === "true" || v === "1" || v === "yes") return true
   if (v === "off" || v === "false" || v === "0" || v === "no") return false
   return !current
+}
+
+/**
+ * Build the /help notice from the live command registry plus a static
+ * navigation / prompt-keys section.
+ *
+ * Slash commands are auto-derived from the registry — adding a new
+ * CommandSpec with a `slash` automatically surfaces it here without
+ * touching this file. Aliases are listed in parens after the canonical
+ * name. Commands without a slash (palette-only) are skipped.
+ *
+ * The navigation and prompt sections are static because keyboard
+ * bindings live in a separate registry (src/tui/context/keybind.tsx)
+ * and aren't kept in sync with the command list. If you change a
+ * binding, update the corresponding line below.
+ */
+function renderHelp(commands: CommandSpec[]): string {
+  const slashed = commands.filter((c) => c.slash)
+  // Pad the canonical-name column to the longest entry for readable
+  // alignment in the plain-text notice.
+  const labels = slashed.map(slashLabel)
+  const maxLabelLen = labels.reduce((m, s) => Math.max(m, s.length), 0)
+  const labelPad = maxLabelLen + 2
+  const slashLines = slashed.map((c, i) => {
+    const label = labels[i]!.padEnd(labelPad, " ")
+    const desc = c.description ?? c.title
+    return `  ${label}${desc}`
+  })
+  return [
+    "claude-tui — slash commands:",
+    ...slashLines,
+    "  Anything else starting with / is forwarded to claude.",
+    "",
+    "navigation:",
+    "  PageUp / PageDown        scroll the message log one page",
+    "  Ctrl+Home / Ctrl+End     jump to top / bottom of the log",
+    "  Mouse wheel              scroll (use /scroll to tune sensitivity)",
+    "  Mouse drag               select text; release auto-copies to clipboard",
+    "",
+    "prompt:",
+    "  Enter                    submit message",
+    "  Ctrl+J / Shift+Enter     insert a newline",
+    "  Tab                      cycle agent mode (Default ↔ Plan), or",
+    "                           complete the highlighted /command",
+    "  /                        slash autocomplete in the prompt",
+    "  Ctrl+K                   open the command menu",
+    "  Ctrl+O                   collapse / expand all tool-output blocks",
+    "  Ctrl+C                   clear the prompt; if empty, quit",
+    "  Ctrl+D                   quit",
+    "  Esc                      close the topmost dialog",
+    "  y / n                    accept / deny when a permission prompt is open",
+  ].join("\n")
+}
+
+/** Render a slash command's display label, with aliases in parens. */
+function slashLabel(spec: CommandSpec): string {
+  if (!spec.slash) return ""
+  const name = "/" + spec.slash.name
+  const aliases = spec.slash.aliases ?? []
+  if (aliases.length === 0) return name
+  return `${name} (${aliases.map((a) => "/" + a).join(", ")})`
 }
