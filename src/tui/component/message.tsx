@@ -173,10 +173,18 @@ function MarkdownContent(props: {
           )
         }
         if (seg.kind === "blockquote") {
-          // The left-edge `│` indicator + 1ch padding before the
-          // content. Recursing on splitMarkdown(seg.text) lets nested
-          // `> >` quotes naturally produce nested bordered boxes
-          // because the stripped inner content still starts with `>`.
+          // Left-edge `│` indicator in the Claude warm-orange (the
+          // same `theme.primary` we use for the prompt indicator and
+          // list bullets — visually consistent with "this marker
+          // means structurally distinguished content"), against a
+          // barely-there bg fill (backgroundPanel — only one step
+          // darker than the main bg) so the quoted region reads as a
+          // distinct surface without competing visually with code
+          // blocks or dialogs.
+          //
+          // Recursing on splitMarkdown(seg.text) lets nested `> >`
+          // quotes naturally produce nested bordered boxes because
+          // the stripped inner content still starts with `>`.
           const innerSegments = createMemo(() => splitMarkdown(seg.text))
           return (
             <box
@@ -184,8 +192,10 @@ function MarkdownContent(props: {
               flexShrink={0}
               border={["left"]}
               borderStyle="single"
-              borderColor={theme.markdown.rule}
+              borderColor={theme.primary}
+              backgroundColor={theme.backgroundPanel}
               paddingLeft={1}
+              paddingRight={1}
             >
               <MarkdownContent
                 segments={innerSegments()}
