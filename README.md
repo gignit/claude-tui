@@ -11,7 +11,7 @@ official **[`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@ant
 > are all welcome.
 
 
-<img width="1268" height="829" alt="Screenshot from 2026-04-18 20-05-02" src="https://github.com/user-attachments/assets/927075b0-796e-4ece-9381-fa63f182c024" />
+<img width="1238" height="944" alt="Screenshot from 2026-04-19 19-08-44" src="https://github.com/user-attachments/assets/da15c245-a48f-45fb-b602-06ddbc282845" />
 <br>
 <img width="1268" height="829" alt="Screenshot from 2026-04-18 20-05-18" src="https://github.com/user-attachments/assets/4db2e7bc-f7f1-4d85-9aa3-fc779b3b590e" />
 <br>
