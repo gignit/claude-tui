@@ -283,22 +283,24 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
 
   // Track in-flight assistant message so streaming text appends to it.
   let currentAssistantId: string | null = null
-  // Per-turn streaming buffers. These accumulate text/thinking deltas
-  // arriving via `stream_event` SDK messages so we can emit a running
-  // total to the display on every chunk. Reset on every `message_start`
-  // — the SDK may send several assistant turns within one user request
-  // (e.g. text → tool_use → text after tool result), each gets its
-  // own message_start so the buffers don't bleed across them.
-  // The end-of-turn `assistant` message (which contains the full
-  // already-streamed text) is harmless: appendAssistantText replaces
-  // the bubble's text via patch, so re-setting it to the same value
-  // is a no-op render.
-  let streamingTextBuf = ""
-  let streamingThinkingBuf = ""
+  // Per-content-block state for streaming. The Anthropic stream
+  // gives us each content block (text, thinking, tool_use) as a
+  // separate stream of chunks indexed by `evt.index` within the
+  // current message. We need per-index state because:
+  //   - A single message can contain multiple text blocks separated
+  //     by tool_use blocks. Each text block is a SEPARATE bubble in
+  //     the scrollback so the visual order stays text → tool → text.
+  //   - The end-of-turn `assistant` event re-emits all blocks; we
+  //     skip blocks we already streamed (matched by index) so the
+  //     bubbles aren't duplicated.
+  // Reset on every `message_start`.
+  type StreamBlock =
+    | { kind: "text"; displayId: string; content: string }
+    | { kind: "thinking"; displayId: string; content: string }
+    | { kind: "tool_use"; displayId: string; toolUseId: string }
+  let currentMessageBlocks: Map<number, StreamBlock> = new Map()
   // Captured from the most recent `message_start` event so each chunk
-  // emitted during streaming carries the right model attribution. The
-  // final `assistant` event also has this — keeping it on the buffer
-  // means we don't have to re-stamp the bubble at end-of-turn.
+  // emitted during streaming carries the right model attribution.
   let streamingTurnModel: string | undefined
   // Map SDK toolUseID → display tool_call id, so result events can find their call.
   const toolCallByUseId = new Map<string, string>()
@@ -340,23 +342,79 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
   function translateSdkMessage(msg: SDKMessage) {
     switch (msg.type) {
       case "assistant": {
+        // End-of-turn message containing the canonical content. By the
+        // time this arrives, `stream_event` should already have created
+        // a display item for each content block via
+        // `currentMessageBlocks` — so this handler mostly *finalizes*
+        // (updates with the authoritative text/input). It also acts as
+        // the fallback path when streaming was never received (older
+        // SDK or includePartialMessages off).
         const beta = msg.message
-        // Stamp the model that produced this turn onto the assistant
-        // bubble. We pull it off BetaMessage.model on every assistant
-        // event; if the user runs /model mid-conversation the next turn
-        // arrives with the new model, but this turn keeps the old one.
         const turnModel = typeof beta.model === "string" ? beta.model : undefined
         const turnMode = currentMode
-        for (const block of beta.content) {
+        for (let i = 0; i < beta.content.length; i++) {
+          const block = beta.content[i]!
+          const streamed = currentMessageBlocks.get(i)
           if (block.type === "text") {
-            appendAssistantText(block.text, turnModel, turnMode)
+            if (streamed?.kind === "text") {
+              emit({
+                type: "updated",
+                id: streamed.displayId,
+                patch: {
+                  text: block.text,
+                  mode: turnMode,
+                  ...(turnModel ? { model: turnModel } : {}),
+                } as Partial<DisplayItem>,
+              })
+            } else {
+              const id = nextDisplayId("asst")
+              emit({
+                type: "appended",
+                item: {
+                  kind: "assistant",
+                  id,
+                  text: block.text,
+                  complete: false,
+                  mode: turnMode,
+                  ...(turnModel ? { model: turnModel } : {}),
+                  createdAt: Date.now(),
+                },
+              })
+              currentMessageBlocks.set(i, { kind: "text", displayId: id, content: block.text })
+            }
           } else if (block.type === "thinking") {
-            appendAssistantThinking(block.thinking, turnModel, turnMode)
+            if (streamed?.kind === "thinking") {
+              emit({
+                type: "updated",
+                id: streamed.displayId,
+                patch: {
+                  thinking: block.thinking,
+                  mode: turnMode,
+                  ...(turnModel ? { model: turnModel } : {}),
+                } as Partial<DisplayItem>,
+              })
+            } else {
+              const id = nextDisplayId("asst")
+              emit({
+                type: "appended",
+                item: {
+                  kind: "assistant",
+                  id,
+                  text: "",
+                  thinking: block.thinking,
+                  complete: false,
+                  mode: turnMode,
+                  ...(turnModel ? { model: turnModel } : {}),
+                  createdAt: Date.now(),
+                },
+              })
+              currentMessageBlocks.set(i, { kind: "thinking", displayId: id, content: block.thinking })
+            }
           } else if (block.type === "tool_use") {
-            // Detect Claude's built-in mode-switch tools and update local
-            // state so the status line reflects reality. The model can
-            // call these tools to enter/exit plan mode mid-conversation
-            // without the user toggling Tab.
+            // Detect Claude's built-in mode-switch tools and update
+            // local state so the status line reflects reality. The
+            // model can call these tools to enter/exit plan mode
+            // mid-conversation without the user toggling Tab.
             if (block.name === "plan_enter" && currentMode !== "plan") {
               currentMode = "plan"
               emit({ type: "mode", mode: currentMode })
@@ -366,18 +424,32 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
               emit({ type: "mode", mode: currentMode })
               dlog("agent.mode.auto", { mode: currentMode, source: "plan_exit" })
             }
-            const id = nextDisplayId("tool")
-            toolCallByUseId.set(block.id, id)
-            const item: DisplayItem = {
-              kind: "tool_call",
-              id,
-              toolUseId: block.id,
-              toolName: block.name,
-              input: (block.input ?? {}) as Record<string, unknown>,
-              resolved: false,
-              createdAt: Date.now(),
+            const parsedInput = (block.input ?? {}) as Record<string, unknown>
+            if (streamed?.kind === "tool_use") {
+              // Tool item was appended during streaming with empty
+              // input. Now we have the parsed JSON input — update.
+              emit({
+                type: "updated",
+                id: streamed.displayId,
+                patch: { input: parsedInput } as Partial<DisplayItem>,
+              })
+            } else {
+              const id = nextDisplayId("tool")
+              toolCallByUseId.set(block.id, id)
+              emit({
+                type: "appended",
+                item: {
+                  kind: "tool_call",
+                  id,
+                  toolUseId: block.id,
+                  toolName: block.name,
+                  input: parsedInput,
+                  resolved: false,
+                  createdAt: Date.now(),
+                },
+              })
+              currentMessageBlocks.set(i, { kind: "tool_use", displayId: id, toolUseId: block.id })
             }
-            emit({ type: "appended", item })
             emit({ type: "status", status: { kind: "tool_running", toolName: block.name } })
           }
         }
@@ -420,8 +492,21 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
       }
 
       case "result": {
-        // End-of-turn marker. Drop streaming-text accumulator so the next
-        // assistant turn starts a fresh bubble.
+        // End-of-request marker. Mark every text/thinking bubble in
+        // the current message as complete (in case content_block_stop
+        // didn't reach us — e.g. dropped events) and clear the block
+        // map so the next request starts fresh.
+        for (const [, block] of currentMessageBlocks) {
+          if (block.kind === "text" || block.kind === "thinking") {
+            emit({
+              type: "updated",
+              id: block.displayId,
+              patch: { complete: true } as Partial<DisplayItem>,
+            })
+          }
+        }
+        currentMessageBlocks = new Map()
+        // Legacy fallback for the pre-block-tracking code path.
         if (currentAssistantId) {
           emit({ type: "updated", id: currentAssistantId, patch: { complete: true } as Partial<DisplayItem> })
           currentAssistantId = null
@@ -460,42 +545,132 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
 
       case "stream_event": {
         // Partial assistant message events (the Anthropic SSE stream
-        // surfaced via SDKPartialAssistantMessage). We handle text and
-        // thinking deltas to drive live streaming of the bubble. Tool
-        // use blocks are NOT streamed here — their JSON arrives as
-        // input_json_delta chunks that we'd have to accumulate and
-        // parse, and the end-of-turn `assistant` event has the fully
-        // assembled tool_use block already, so it's simpler to wait
-        // for that and let the existing tool-call handling fire.
+        // surfaced via SDKPartialAssistantMessage). We use these to
+        // drive live streaming of text, thinking, and the *position*
+        // of tool_use blocks (their JSON input fills in at end-of-turn
+        // from the canonical `assistant` event). Each content block
+        // gets its own display item, indexed by `evt.index` in
+        // `currentMessageBlocks`, so messages with text → tool → text
+        // render in correct visual order rather than collapsing into
+        // a single bubble that gets repeatedly overwritten.
         const evt = msg.event
         if (evt.type === "message_start") {
-          // Reset per-turn buffers and snag the model name. The SDK
-          // sends one `message_start` per assistant turn within a
-          // request; resetting keeps text from a prior turn out of
-          // the next bubble.
-          streamingTextBuf = ""
-          streamingThinkingBuf = ""
+          // New assistant message — reset the per-message block map.
+          // (One user request can produce multiple assistant messages,
+          // e.g. text → tool_use → result → text.)
+          currentMessageBlocks = new Map()
           streamingTurnModel = typeof evt.message.model === "string" ? evt.message.model : undefined
           break
         }
-        if (evt.type === "content_block_delta") {
-          const delta = evt.delta
-          if (delta.type === "text_delta") {
-            streamingTextBuf += delta.text
-            appendAssistantText(streamingTextBuf, streamingTurnModel, currentMode)
-          } else if (delta.type === "thinking_delta") {
-            streamingThinkingBuf += delta.thinking
-            appendAssistantThinking(streamingThinkingBuf, streamingTurnModel, currentMode)
+        if (evt.type === "content_block_start") {
+          const idx = evt.index
+          const block = evt.content_block
+          if (block.type === "text") {
+            const id = nextDisplayId("asst")
+            currentMessageBlocks.set(idx, { kind: "text", displayId: id, content: "" })
+            emit({
+              type: "appended",
+              item: {
+                kind: "assistant",
+                id,
+                text: "",
+                complete: false,
+                mode: currentMode,
+                ...(streamingTurnModel ? { model: streamingTurnModel } : {}),
+                createdAt: Date.now(),
+              },
+            })
+            emit({ type: "status", status: { kind: "streaming" } })
+          } else if (block.type === "thinking") {
+            const id = nextDisplayId("asst")
+            currentMessageBlocks.set(idx, { kind: "thinking", displayId: id, content: "" })
+            emit({
+              type: "appended",
+              item: {
+                kind: "assistant",
+                id,
+                text: "",
+                thinking: "",
+                complete: false,
+                mode: currentMode,
+                ...(streamingTurnModel ? { model: streamingTurnModel } : {}),
+                createdAt: Date.now(),
+              },
+            })
+            emit({ type: "status", status: { kind: "thinking" } })
+          } else if (block.type === "tool_use") {
+            // Mode-switch detection mirrored from the assistant case
+            // — Claude can call plan_enter/plan_exit mid-conversation
+            // and we want the status line to reflect that ASAP.
+            if (block.name === "plan_enter" && currentMode !== "plan") {
+              currentMode = "plan"
+              emit({ type: "mode", mode: currentMode })
+            } else if (block.name === "plan_exit" && currentMode !== "default") {
+              currentMode = "default"
+              emit({ type: "mode", mode: currentMode })
+            }
+            const id = nextDisplayId("tool")
+            toolCallByUseId.set(block.id, id)
+            currentMessageBlocks.set(idx, { kind: "tool_use", displayId: id, toolUseId: block.id })
+            emit({
+              type: "appended",
+              item: {
+                kind: "tool_call",
+                id,
+                toolUseId: block.id,
+                toolName: block.name,
+                // Empty input for now — the assistant event will
+                // re-emit the canonical parsed JSON. Streaming the
+                // input JSON would require buffering input_json_delta
+                // chunks and re-parsing on every update; not worth the
+                // code for partial-input visibility.
+                input: {},
+                resolved: false,
+                createdAt: Date.now(),
+              },
+            })
+            emit({ type: "status", status: { kind: "tool_running", toolName: block.name } })
           }
-          // input_json_delta / citations_delta / signature_delta —
-          // ignored. tool input streaming would require accumulating
-          // the JSON fragments and re-parsing on every chunk; the
-          // end-of-turn `assistant` event has the parsed input ready.
           break
         }
-        // message_delta, content_block_start, content_block_stop,
-        // message_stop — useful for fine-grained UI but not needed
-        // for basic streaming text. Ignore.
+        if (evt.type === "content_block_delta") {
+          const idx = evt.index
+          const blockState = currentMessageBlocks.get(idx)
+          if (!blockState) break
+          const delta = evt.delta
+          if (delta.type === "text_delta" && blockState.kind === "text") {
+            blockState.content += delta.text
+            emit({
+              type: "updated",
+              id: blockState.displayId,
+              patch: { text: blockState.content } as Partial<DisplayItem>,
+            })
+          } else if (delta.type === "thinking_delta" && blockState.kind === "thinking") {
+            blockState.content += delta.thinking
+            emit({
+              type: "updated",
+              id: blockState.displayId,
+              patch: { thinking: blockState.content } as Partial<DisplayItem>,
+            })
+          }
+          // input_json_delta / citations_delta / signature_delta — ignored.
+          break
+        }
+        if (evt.type === "content_block_stop") {
+          // Mark text/thinking blocks complete as soon as their stream
+          // closes — keeps each bubble's "..." indicator from lingering
+          // through the rest of the message + later assistant messages.
+          const blockState = currentMessageBlocks.get(evt.index)
+          if (blockState && (blockState.kind === "text" || blockState.kind === "thinking")) {
+            emit({
+              type: "updated",
+              id: blockState.displayId,
+              patch: { complete: true } as Partial<DisplayItem>,
+            })
+          }
+          break
+        }
+        // message_delta / message_stop — not needed.
         break
       }
 
@@ -534,56 +709,11 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
     }
   }
 
-  function appendAssistantText(text: string, model: string | undefined, mode: AgentMode) {
-    if (!currentAssistantId) {
-      currentAssistantId = nextDisplayId("asst")
-      emit({
-        type: "appended",
-        item: {
-          kind: "assistant",
-          id: currentAssistantId,
-          text,
-          complete: false,
-          mode,
-          ...(model ? { model } : {}),
-          createdAt: Date.now(),
-        },
-      })
-      emit({ type: "status", status: { kind: "streaming" } })
-    } else {
-      emit({
-        type: "updated",
-        id: currentAssistantId,
-        patch: { text, mode, ...(model ? { model } : {}) } as Partial<DisplayItem>,
-      })
-    }
-  }
-
-  function appendAssistantThinking(thinking: string, model: string | undefined, mode: AgentMode) {
-    if (!currentAssistantId) {
-      currentAssistantId = nextDisplayId("asst")
-      emit({
-        type: "appended",
-        item: {
-          kind: "assistant",
-          id: currentAssistantId,
-          text: "",
-          thinking,
-          complete: false,
-          mode,
-          ...(model ? { model } : {}),
-          createdAt: Date.now(),
-        },
-      })
-    } else {
-      emit({
-        type: "updated",
-        id: currentAssistantId,
-        patch: { thinking, mode, ...(model ? { model } : {}) } as Partial<DisplayItem>,
-      })
-    }
-    emit({ type: "status", status: { kind: "thinking" } })
-  }
+  // (Note: the old appendAssistantText / appendAssistantThinking
+  // helpers were removed when streaming moved to a per-content-block
+  // model — see currentMessageBlocks above. The legacy
+  // currentAssistantId is kept only as a defensive fallback for the
+  // result-event path.)
 
   const done = consume()
 

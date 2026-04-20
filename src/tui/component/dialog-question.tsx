@@ -190,8 +190,10 @@ export function DialogQuestion(props: { request: QuestionRequest }) {
       cancel()
       return true
     }
-    if (e.name === "tab" && e.shift) {
-      // Shift-Tab: leave the input and go back to the option list
+    if (e.name === "tab") {
+      // Tab (with or without Shift): toggle focus back to the option
+      // list. Symmetric with the option-list handler that Tabs INTO
+      // the input — pressing Tab repeatedly walks back and forth.
       setOtherFocused(false)
       return true
     }
