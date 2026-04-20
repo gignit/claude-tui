@@ -18,6 +18,25 @@ official **[`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@ant
 <img width="1268" height="829" alt="Screenshot from 2026-04-18 20-05-24" src="https://github.com/user-attachments/assets/b0579f91-a0f3-4adf-995d-6aa004f3f33e" />
 <br>
 <img width="1268" height="829" alt="Screenshot from 2026-04-18 20-05-39" src="https://github.com/user-attachments/assets/cb34282d-2c66-4e05-959e-2639bfa9a5c2" />
+<br>
+<img width="1223" height="677" alt="Screenshot from 2026-04-19 18-31-08" src="https://github.com/user-attachments/assets/d3dfc381-70d1-47d0-b87f-bb7e7cc42750" />
+<br>
+
+## Markdown TUI Rendering Support
+> able to be toggled on or off with `/markdown`
+
+### Markdown Enabled (Default)
+<img width="1240" height="795" alt="Screenshot from 2026-04-19 17-32-42" src="https://github.com/user-attachments/assets/7e5c47ec-511f-4af5-91dc-d223009f6460" />
+
+### Markdown Disabled
+<img width="1240" height="448" alt="Screenshot from 2026-04-19 17-33-03" src="https://github.com/user-attachments/assets/fe648383-0889-401c-9695-ca001d7b0769" />
+
+## Slash (/) commands and Menu (ctrl+k)
+
+<img width="1238" height="356" alt="Screenshot from 2026-04-19 19-13-10" src="https://github.com/user-attachments/assets/eccf934e-8ae2-4507-afb3-868555e07f65" />
+<br>
+<img width="1252" height="963" alt="Screenshot from 2026-04-19 19-14-33" src="https://github.com/user-attachments/assets/579d293d-9cae-41d0-ba10-80284ad245a9" />
+<br>
 
 
 ---
