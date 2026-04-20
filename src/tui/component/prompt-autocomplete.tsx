@@ -23,17 +23,32 @@ export interface AutocompleteEntry {
   display: string
 }
 
+/**
+ * Build the canonical autocomplete entry for a command. We return at
+ * most ONE entry per command — the canonical slash name — even when
+ * the command has aliases. Aliases still match via
+ * autocompleteSuggestions (so typing `/md` shows `/markdown`), they
+ * just don't get their own row in the dropdown. Showing every alias
+ * as a separate row was visually noisy and made the list feel longer
+ * than it really was — `/sessions` alone surfaced `/sessions`,
+ * `/session`, `/resume`, and `/continue`.
+ */
 export function buildEntries(spec: CommandSpec): AutocompleteEntry[] {
   if (!spec.slash) return []
-  const out: AutocompleteEntry[] = [
+  return [
     { spec, insertText: "/" + spec.slash.name, display: "/" + spec.slash.name },
   ]
-  for (const alias of spec.slash.aliases ?? []) {
-    out.push({ spec, insertText: "/" + alias, display: "/" + alias })
-  }
-  return out
 }
 
+/**
+ * Filter the entry list by what the user has typed so far. Matches
+ * against both the canonical slash name AND any aliases — so `/md`
+ * still surfaces `/markdown`, `/scrollspeed` still surfaces
+ * `/scroll`, etc. — but only ever returns the canonical entry per
+ * command (aliases don't get their own row).
+ *
+ * Match priority: prefix > substring. Both check name and aliases.
+ */
 export function autocompleteSuggestions(commands: CommandSpec[], inputValue: string): AutocompleteEntry[] {
   if (!inputValue.startsWith("/")) return []
   // Match against the first whitespace-delimited token only — once the
@@ -43,10 +58,25 @@ export function autocompleteSuggestions(commands: CommandSpec[], inputValue: str
   const needle = head.slice(1).toLowerCase()
   const all: AutocompleteEntry[] = commands.flatMap((c) => buildEntries(c))
   if (!needle) return all
-  // Prefer prefix matches; fall back to substring.
-  const prefix = all.filter((e) => e.display.slice(1).toLowerCase().startsWith(needle))
+  // Prefer prefix matches over substring matches. A prefix match on
+  // either the name OR an alias counts.
+  const prefix = all.filter((e) => slashNamesFor(e.spec).some((n) => n.startsWith(needle)))
   if (prefix.length > 0) return prefix
-  return all.filter((e) => e.display.slice(1).toLowerCase().includes(needle))
+  return all.filter((e) => slashNamesFor(e.spec).some((n) => n.includes(needle)))
+}
+
+/**
+ * Lowercase list of every name a command can be invoked by — its
+ * canonical slash name plus all aliases. Used by the suggestion
+ * filter so typing an alias still surfaces the parent command.
+ */
+function slashNamesFor(spec: CommandSpec): string[] {
+  if (!spec.slash) return []
+  const out = [spec.slash.name.toLowerCase()]
+  for (const a of spec.slash.aliases ?? []) {
+    out.push(a.toLowerCase())
+  }
+  return out
 }
 
 // Active-row marker — kept in a const so the column-width math and the
