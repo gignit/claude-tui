@@ -26,7 +26,7 @@ import type {
 } from "../../agent/types.ts"
 import { type AgentMode, type PermissionLevel, levelFromSdk, levelToSdk, nextMode } from "../../agent/modes.ts"
 import { saveState } from "../../util/state-store.ts"
-import { readSessionHistory } from "../../util/sessions.ts"
+import { listRewindPoints, readSessionHistory, type RewindPoint } from "../../util/sessions.ts"
 import { dlog } from "../../util/debug-log.ts"
 
 export interface AgentContextValue {
@@ -78,7 +78,13 @@ export interface AgentContextValue {
    * anchor. anchorUuid null = rewind to before the first turn (fresh
    * session).
    */
-  rewindSession: (point: import("../../util/sessions.ts").RewindPoint) => Promise<void>
+  rewindSession: (point: RewindPoint) => Promise<void>
+  /**
+   * Rewind candidates for the current session — the active branch only.
+   * After a rewind (before the next turn lands) this respects the new
+   * anchor, so dropped turns don't reappear in the /rewind list.
+   */
+  rewindPoints: () => Promise<RewindPoint[]>
   listModels: () => Promise<ModelChoice[]>
   /** Append a local-only notice to the scrollback (does not hit the SDK). */
   pushNotice: (text: string, tone?: "info" | "debug") => void
@@ -112,6 +118,12 @@ export function AgentProvider(props: AgentProviderProps) {
   // dereference via `client?.x()` at call time, so swapping the binding
   // for resumeSession() is safe.
   let client: AgentClient | null = null
+  // After a rewind, the on-disk file's newest entry still belongs to the
+  // abandoned branch until a new turn is appended. This holds the rewind
+  // anchor as the branch leaf for history/rewind reads in that window;
+  // cleared when the next request cycle completes (turn_stamp arrives)
+  // or the client is swapped for another session.
+  let branchLeaf: string | null = null
 
   const startClient = (extra: Partial<AgentClientConfig>): void => {
     dlog("agent.client.start", { resume: extra.resume })
@@ -156,6 +168,10 @@ export function AgentProvider(props: AgentProviderProps) {
       onEvent: (evt) => {
         switch (evt.type) {
           case "appended":
+            // A completed request cycle extends the on-disk branch past
+            // any rewind anchor — the natural (newest-entry) leaf is
+            // correct again.
+            if (evt.item.kind === "turn_stamp") branchLeaf = null
             setItems(produce((arr) => arr.push(evt.item)))
             break
           case "updated":
@@ -248,6 +264,7 @@ export function AgentProvider(props: AgentProviderProps) {
     },
     resumeSession: async (id) => {
       dlog("agent.resumeSession", { id })
+      branchLeaf = null
       // The SDK's --resume only loads the session into the model's
       // context — it doesn't echo prior turns through the live event
       // stream. So we read the on-disk JSONL transcript ourselves and
@@ -283,6 +300,7 @@ export function AgentProvider(props: AgentProviderProps) {
       const id = sessionId()
       if (!id) return
       dlog("agent.forkSession", { from: id })
+      branchLeaf = null
       // Same shape as resumeSession, but with fork:true the SDK assigns
       // a fresh session id — the init event updates the signal.
       let history: DisplayItem[] = []
@@ -310,41 +328,37 @@ export function AgentProvider(props: AgentProviderProps) {
       // 2. Restart the conversation truncated at the anchor. For the
       //    first user turn there is nothing before it — start fresh.
       if (point.anchorUuid === null) {
+        branchLeaf = null
         startClient({})
         value.pushNotice("/rewind: conversation reset to the beginning (new session)")
         return
       }
+      // Remember the anchor as the active branch leaf: the on-disk file
+      // still ends with the abandoned turns until a new cycle lands, so
+      // history/rewind reads must walk from here, not the file's tail.
+      branchLeaf = point.anchorUuid
       let history: DisplayItem[] = []
       try {
-        history = await readSessionHistory(props.config.cwd ?? process.cwd(), id)
+        history = await readSessionHistory(props.config.cwd ?? process.cwd(), id, point.anchorUuid)
       } catch {
         /* scrollback prefill is cosmetic; the resume itself is what matters */
-      }
-      // Truncate the visual history at the picked user turn: drop the
-      // (ordinal+1)-th user bubble and everything after it.
-      let seen = 0
-      let cut = history.length
-      for (let i = 0; i < history.length; i++) {
-        if (history[i]!.kind === "user") {
-          if (seen === point.ordinal) {
-            cut = i
-            break
-          }
-          seen++
-        }
       }
       startClient({ resume: id, resumeAt: point.anchorUuid })
       // Same optimistic seed as resumeSession — rewinding continues the
       // same session id, and a follow-up /rewind or /fork shouldn't have
       // to wait for the init event.
       setSessionIdSignal(id)
-      const truncated = history.slice(0, cut)
-      if (truncated.length > 0) {
+      if (history.length > 0) {
         setItems(produce((arr) => {
-          for (const item of truncated) arr.push(item)
+          for (const item of history) arr.push(item)
         }))
       }
       value.pushNotice(`/rewind: conversation rewound to before turn ${point.ordinal + 1}`)
+    },
+    rewindPoints: async () => {
+      const id = sessionId()
+      if (!id) return []
+      return listRewindPoints(props.config.cwd ?? process.cwd(), id, branchLeaf ?? undefined)
     },
     listModels: async () => (client ? client.listModels() : []),
     pushNotice: (text: string, tone: "info" | "debug" = "info") => {

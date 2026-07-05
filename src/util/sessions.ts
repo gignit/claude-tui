@@ -59,6 +59,59 @@ export function projectDirName(cwd: string): string {
   return cwd.replace(/[/.]/g, "-")
 }
 
+/** Parse a session JSONL into raw entry objects, skipping bad lines. */
+function parseSessionRows(text: string): any[] {
+  const rows: any[] = []
+  for (const raw of text.split("\n")) {
+    if (!raw.trim()) continue
+    try {
+      rows.push(JSON.parse(raw))
+    } catch {
+      /* skip malformed line */
+    }
+  }
+  return rows
+}
+
+/**
+ * Session files are append-only TREES, not lists: every entry carries
+ * uuid + parentUuid, and a rewind (resumeSessionAt) simply makes the
+ * next entry branch from an older parent — abandoned turns stay in the
+ * file forever. Reading linearly therefore shows dead branches (and
+ * subagent sidechains). This returns a predicate keeping only entries
+ * on the ACTIVE branch: the parent chain walked up from `leafUuid`
+ * (or, when omitted, from the newest non-sidechain entry in the file).
+ *
+ * Entries without a uuid (older formats) are kept — better to show a
+ * stray line than to drop history we can't classify. Files with no
+ * uuids at all fall back to keep-everything.
+ */
+function activeBranchFilter(rows: any[], leafUuid?: string): (entry: any) => boolean {
+  const byUuid = new Map<string, any>()
+  for (const row of rows) {
+    if (typeof row?.uuid === "string") byUuid.set(row.uuid, row)
+  }
+  let leaf = leafUuid && byUuid.has(leafUuid) ? leafUuid : undefined
+  if (!leaf) {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const u = rows[i]?.uuid
+      if (typeof u === "string" && rows[i]?.isSidechain !== true) {
+        leaf = u
+        break
+      }
+    }
+  }
+  if (!leaf) return () => true
+  const active = new Set<string>()
+  let cur: string | undefined = leaf
+  while (cur && !active.has(cur)) {
+    active.add(cur)
+    const parent: unknown = byUuid.get(cur)?.parentUuid
+    cur = typeof parent === "string" ? parent : undefined
+  }
+  return (entry) => typeof entry?.uuid !== "string" || active.has(entry.uuid)
+}
+
 /** Returns the absolute path to ~/.claude/projects/<encoded>. */
 export function projectDirPath(cwd: string): string {
   return join(homedir(), ".claude", "projects", projectDirName(cwd))
@@ -140,7 +193,17 @@ export async function listSessions(cwd: string, limit = 50): Promise<SessionSumm
  *     resumeSessionAt so the resumed conversation ends just BEFORE the
  *     picked turn (the turn itself and everything after are dropped).
  */
-export async function listRewindPoints(cwd: string, sessionId: string): Promise<RewindPoint[]> {
+export async function listRewindPoints(
+  cwd: string,
+  sessionId: string,
+  /**
+   * Walk the branch ending at this entry instead of the file's newest.
+   * Passed by the agent right after a rewind: until a new turn lands,
+   * the newest entry on disk still belongs to the abandoned branch and
+   * the dropped turns would reappear in the list.
+   */
+  leafUuid?: string,
+): Promise<RewindPoint[]> {
   const path = join(projectDirPath(cwd), `${sessionId}.jsonl`)
   let text: string
   try {
@@ -148,16 +211,12 @@ export async function listRewindPoints(cwd: string, sessionId: string): Promise<
   } catch {
     return []
   }
+  const rows = parseSessionRows(text)
+  const onActiveBranch = activeBranchFilter(rows, leafUuid)
   const points: RewindPoint[] = []
   let lastAssistantUuid: string | null = null
-  for (const raw of text.split("\n")) {
-    if (!raw.trim()) continue
-    let entry: any
-    try {
-      entry = JSON.parse(raw)
-    } catch {
-      continue
-    }
+  for (const entry of rows) {
+    if (!onActiveBranch(entry)) continue
     if (entry?.type === "assistant") {
       if (typeof entry.uuid === "string") lastAssistantUuid = entry.uuid
       continue
@@ -176,7 +235,12 @@ export async function listRewindPoints(cwd: string, sessionId: string): Promise<
   return points
 }
 
-export async function readSessionHistory(cwd: string, sessionId: string): Promise<DisplayItem[]> {
+export async function readSessionHistory(
+  cwd: string,
+  sessionId: string,
+  /** Optional branch leaf — see listRewindPoints. */
+  leafUuid?: string,
+): Promise<DisplayItem[]> {
   const path = join(projectDirPath(cwd), `${sessionId}.jsonl`)
   let text: string
   try {
@@ -184,6 +248,8 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
   } catch {
     return []
   }
+  const rows = parseSessionRows(text)
+  const onActiveBranch = activeBranchFilter(rows, leafUuid)
 
   const items: DisplayItem[] = []
   let counter = 0
@@ -210,14 +276,8 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
     stampModel = undefined
   }
 
-  for (const raw of text.split("\n")) {
-    if (!raw.trim()) continue
-    let entry: any
-    try {
-      entry = JSON.parse(raw)
-    } catch {
-      continue
-    }
+  for (const entry of rows) {
+    if (!onActiveBranch(entry)) continue
     const type = entry?.type
     if (type !== "user" && type !== "assistant") continue
     const createdAt = parseTimestamp(entry?.timestamp) ?? Date.now()

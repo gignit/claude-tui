@@ -10,7 +10,7 @@ import { useDialog } from "../context/dialog.tsx"
 import { useAgent } from "../context/agent.tsx"
 import { useTheme } from "../context/theme.tsx"
 import { DialogSelect, type DialogSelectOption } from "./dialog-select.tsx"
-import { listRewindPoints, type RewindPoint } from "../../util/sessions.ts"
+import type { RewindPoint } from "../../util/sessions.ts"
 
 const PREVIEW_MAX = 64
 
@@ -24,11 +24,10 @@ export function DialogRewindList() {
   const dialog = useDialog()
   const agent = useAgent()
   const theme = useTheme()
-  const [points] = createResource(async () => {
-    const id = agent.sessionId()
-    if (!id) return []
-    return listRewindPoints(agent.cwd(), id)
-  })
+  // Via the agent so the list reflects the ACTIVE branch — right after
+  // a rewind the file still ends with the abandoned turns, and the
+  // agent knows the anchor to walk from instead.
+  const [points] = createResource(() => agent.rewindPoints())
 
   // Newest last in the file → show newest first; rewinding to a recent
   // turn is the common case.
