@@ -22,8 +22,7 @@ import { DialogVariantList } from "../component/dialog-variant.tsx"
 import { DialogSessionList } from "../component/dialog-session.tsx"
 import { DialogRewindList } from "../component/dialog-rewind.tsx"
 import { MAX_SCROLL_SPEED, MIN_SCROLL_SPEED } from "../../util/scroll.ts"
-import { modeFromSdk, modeLabel, parsePermissionMode } from "../../agent/modes.ts"
-import { saveState } from "../../util/state-store.ts"
+import { levelLabel, modeLabel, parsePermissionLevel } from "../../agent/modes.ts"
 
 interface BuiltinDeps {
   command: ReturnType<typeof useCommand>
@@ -107,34 +106,32 @@ function buildSpecs(deps: BuiltinDeps): CommandSpec[] {
     },
     {
       value: "agent.permissions",
-      title: "Set permission mode",
-      description: "default (prompt) · accept (auto-approve edits) · plan · bypass (no prompts, like --dangerously-skip-permissions). Persists.",
+      title: "Set permission level",
+      description: "default (prompt) · accept (auto-approve edits) · bypass (no prompts). Separate from Tab's Default/Plan mode. Persists.",
       category: "Agent",
-      slash: { name: "permissions", aliases: ["permission-mode", "yolo"] },
+      slash: { name: "permissions", aliases: ["permission", "yolo"] },
       onSelect: (args) => {
         dialog.clear()
         const trimmed = (args ?? "").trim()
         if (!trimmed) {
           agent.pushNotice(
-            `/permissions: current mode is ${modeLabel(agent.mode())}\n` +
-              `  usage: /permissions <default|accept|plan|bypass>\n` +
-              `  (or launch with --permission-mode <mode> / --dangerously-skip-permissions)`,
+            `/permissions: level is ${levelLabel(agent.permissionLevel())}  ·  mode is ${modeLabel(agent.mode())} (Tab toggles mode)\n` +
+              `  usage: /permissions <default|accept|bypass>\n` +
+              `  (or launch with --permission-mode <level> / --dangerously-skip-permissions)`,
           )
           return
         }
-        const sdkMode = parsePermissionMode(trimmed)
-        if (!sdkMode) {
-          agent.pushNotice(`/permissions: unknown mode '${trimmed}' — valid: default, accept, plan, bypass`)
+        if (trimmed.toLowerCase() === "plan") {
+          agent.pushNotice("/permissions: Plan is a mode, not a permission level — press Tab to toggle Default ↔ Plan")
           return
         }
-        void agent.setMode(modeFromSdk(sdkMode)).then(() => {
-          // Persist so the next launch starts in this mode — this is
-          // the config-file answer to `alias claude='claude
-          // --dangerously-skip-permissions'` for the TUI.
-          saveState({ permissionMode: sdkMode })
-          agent.pushNotice(
-            `/permissions: ${modeLabel(modeFromSdk(sdkMode))} (saved — future sessions start this way)`,
-          )
+        const level = parsePermissionLevel(trimmed)
+        if (!level) {
+          agent.pushNotice(`/permissions: unknown level '${trimmed}' — valid: default, accept, bypass`)
+          return
+        }
+        void agent.setPermissionLevel(level).then(() => {
+          agent.pushNotice(`/permissions: ${levelLabel(level)} (saved — future sessions start this way)`)
         })
       },
     },

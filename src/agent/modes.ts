@@ -1,18 +1,22 @@
 /**
- * Agent modes we expose in the TUI. These map directly to the SDK's
- * `permissionMode` option (`Options.permissionMode` in
- * @anthropic-ai/claude-agent-sdk's sdk.d.ts).
+ * Two ORTHOGONAL pieces of agent state that the SDK unfortunately
+ * flattens into one wire enum (`Options.permissionMode`):
  *
- *   - Default: tools execute; sensitive ones raise a y/n prompt
- *   - Accept:  file edits are auto-approved; everything else prompts
- *   - Plan:    SDK refuses write/edit/bash tools; Claude presents a plan
- *   - Bypass:  NO permission checks at all (the SDK equivalent of
- *              `claude --dangerously-skip-permissions`)
+ *   AgentMode — what Claude is doing. Default (execute) or Plan
+ *     (read-only, presents a plan). Toggled with Tab, and by Claude
+ *     itself via the plan_enter / plan_exit tools.
  *
- * Tab cycles Default → Accept → Plan, mirroring the interactive CLI.
- * Bypass is deliberately NOT in the cycle — it's opt-in via the
- * `--dangerously-skip-permissions` launch flag or the /permissions
- * command, and pressing Tab while in Bypass drops back to Default.
+ *   PermissionLevel — how much gets prompted. Set ONLY by explicit
+ *     user action (/permissions or a launch flag), never by Tab:
+ *       - default: sensitive tools raise a y/n prompt
+ *       - accept:  file edits auto-approved; everything else prompts
+ *       - bypass:  no permission checks at all (the SDK equivalent of
+ *                  `claude --dangerously-skip-permissions`)
+ *
+ * The wire value is derived: plan mode always sends "plan"; otherwise
+ * the level maps to default / acceptEdits / bypassPermissions. When
+ * plan mode exits, the level is re-applied — so a user-set level
+ * survives any number of Tab presses and plan round-trips.
  * The SDK's remaining values (dontAsk, auto) stay unexposed.
  */
 
@@ -20,43 +24,38 @@ import type { Options } from "@anthropic-ai/claude-agent-sdk"
 
 export type SdkPermissionMode = NonNullable<Options["permissionMode"]>
 
-export type AgentMode = "default" | "accept" | "plan" | "bypass"
+export type AgentMode = "default" | "plan"
 
-export const AGENT_MODE_CYCLE: readonly AgentMode[] = ["default", "accept", "plan"]
+export type PermissionLevel = "default" | "accept" | "bypass"
 
-/** Human-friendly label shown in the status line and per-message stamp. */
+/** Human-friendly mode label for the status line and per-message stamp. */
 export function modeLabel(m: AgentMode): string {
-  switch (m) {
-    case "plan":
-      return "Plan"
+  return m === "plan" ? "Plan" : "Default"
+}
+
+/** Human-friendly permission-level label. */
+export function levelLabel(l: PermissionLevel): string {
+  switch (l) {
     case "accept":
       return "Accept Edits"
     case "bypass":
       return "Bypass Permissions"
     default:
-      return "Default"
+      return "Default (prompts)"
   }
 }
 
-/** Map our friendly label to the SDK's wire value. */
-export function modeToSdk(m: AgentMode): SdkPermissionMode {
-  switch (m) {
-    case "plan":
-      return "plan"
-    case "accept":
-      return "acceptEdits"
-    case "bypass":
-      return "bypassPermissions"
-    default:
-      return "default"
-  }
-}
-
-/** Map an SDK permission mode (from init / setPermissionMode) back to ours. */
+/** Map an SDK permission mode back to the mode axis. */
 export function modeFromSdk(s: SdkPermissionMode | undefined): AgentMode {
+  return s === "plan" ? "plan" : "default"
+}
+
+/**
+ * Map an SDK permission mode back to the level axis. "plan" carries no
+ * level information — callers should keep their previous level.
+ */
+export function levelFromSdk(s: SdkPermissionMode | undefined): PermissionLevel {
   switch (s) {
-    case "plan":
-      return "plan"
     case "acceptEdits":
       return "accept"
     case "bypassPermissions":
@@ -66,36 +65,47 @@ export function modeFromSdk(s: SdkPermissionMode | undefined): AgentMode {
   }
 }
 
+export function levelToSdk(l: PermissionLevel): SdkPermissionMode {
+  switch (l) {
+    case "accept":
+      return "acceptEdits"
+    case "bypass":
+      return "bypassPermissions"
+    default:
+      return "default"
+  }
+}
+
+/** The single wire value the SDK understands, derived from both axes. */
+export function effectiveSdkMode(mode: AgentMode, level: PermissionLevel): SdkPermissionMode {
+  return mode === "plan" ? "plan" : levelToSdk(level)
+}
+
 /**
- * Parse a user-supplied mode name (CLI flag or /permissions arg) into an
- * SDK permission mode. Accepts our short names and the SDK spellings.
- * Returns undefined for anything unrecognized.
+ * Parse a user-supplied level name (CLI flag or /permissions arg).
+ * Accepts our short names and the SDK spellings. Returns undefined for
+ * anything unrecognized — including "plan", which is a MODE (Tab), not
+ * a permission level.
  */
-export function parsePermissionMode(raw: string): SdkPermissionMode | undefined {
+export function parsePermissionLevel(raw: string): PermissionLevel | undefined {
   switch (raw.trim().toLowerCase()) {
     case "default":
       return "default"
     case "accept":
     case "acceptedits":
     case "accept-edits":
-      return "acceptEdits"
-    case "plan":
-      return "plan"
+      return "accept"
     case "bypass":
     case "bypasspermissions":
     case "bypass-permissions":
     case "skip":
     case "yolo":
-      return "bypassPermissions"
+      return "bypass"
     default:
       return undefined
   }
 }
 
 export function nextMode(current: AgentMode): AgentMode {
-  // Bypass isn't in the cycle; Tab from Bypass returns to Default so
-  // the key always does something predictable.
-  const idx = AGENT_MODE_CYCLE.indexOf(current)
-  if (idx === -1) return "default"
-  return AGENT_MODE_CYCLE[(idx + 1) % AGENT_MODE_CYCLE.length]!
+  return current === "plan" ? "default" : "plan"
 }

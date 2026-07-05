@@ -25,7 +25,13 @@ import type {
   PermissionRequest,
   QuestionRequest,
 } from "./types.ts"
-import { type AgentMode, modeFromSdk, modeToSdk } from "./modes.ts"
+import {
+  type AgentMode,
+  type PermissionLevel,
+  effectiveSdkMode,
+  levelFromSdk,
+  modeFromSdk,
+} from "./modes.ts"
 import { dlog, isDebugEnabled } from "../util/debug-log.ts"
 import { stripAnsi } from "../util/ansi.ts"
 
@@ -176,6 +182,12 @@ export interface AgentClient {
   setEffort(effort: EffortLevel | null): Promise<void>
   /** Switch the agent mode (Default ↔ Plan) for subsequent turns. */
   setMode(mode: AgentMode): Promise<void>
+  /**
+   * Set the permission level (default / accept / bypass). Orthogonal to
+   * the mode: applied immediately unless plan mode is active, in which
+   * case it takes effect when plan mode exits.
+   */
+  setPermissionLevel(level: PermissionLevel): Promise<void>
   /** Fetch the SDK's current view of available models. */
   listModels(): Promise<ModelChoice[]>
   /**
@@ -361,6 +373,31 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
   // Used to stamp assistant messages so a Tab mid-conversation never
   // retroactively relabels older bubbles.
   let currentMode: AgentMode = modeFromSdk(sdkOptions.permissionMode)
+  // The user-set permission level (default / accept / bypass). Only
+  // setPermissionLevel() changes this — mode flips never touch it; the
+  // level is folded back into the wire value whenever plan mode exits.
+  let currentLevel: PermissionLevel = levelFromSdk(sdkOptions.permissionMode)
+
+  /**
+   * React to Claude invoking the built-in plan_enter/plan_exit tools —
+   * shared by the streaming and canonical assistant paths. On exit the
+   * SDK drops the wire mode to plain "default", which would silently
+   * discard a user-set accept/bypass level; re-apply it.
+   */
+  function detectModeSwitchTool(toolName: string) {
+    if (toolName === "plan_enter" && currentMode !== "plan") {
+      currentMode = "plan"
+      emit({ type: "mode", mode: currentMode })
+      dlog("agent.mode.auto", { mode: currentMode, source: "plan_enter" })
+    } else if (toolName === "plan_exit" && currentMode !== "default") {
+      currentMode = "default"
+      emit({ type: "mode", mode: currentMode })
+      dlog("agent.mode.auto", { mode: currentMode, source: "plan_exit" })
+      if (currentLevel !== "default") {
+        void q.setPermissionMode(effectiveSdkMode("default", currentLevel)).catch(() => {})
+      }
+    }
+  }
 
   const consume = async () => {
     try {
@@ -496,15 +533,7 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
             // local state so the status line reflects reality. The
             // model can call these tools to enter/exit plan mode
             // mid-conversation without the user toggling Tab.
-            if (block.name === "plan_enter" && currentMode !== "plan") {
-              currentMode = "plan"
-              emit({ type: "mode", mode: currentMode })
-              dlog("agent.mode.auto", { mode: currentMode, source: "plan_enter" })
-            } else if (block.name === "plan_exit" && currentMode !== "default") {
-              currentMode = "default"
-              emit({ type: "mode", mode: currentMode })
-              dlog("agent.mode.auto", { mode: currentMode, source: "plan_exit" })
-            }
+            detectModeSwitchTool(block.name)
             const parsedInput = (block.input ?? {}) as Record<string, unknown>
             const streamedToolId = toolCallByUseId.get(block.id)
             if (streamedToolId) {
@@ -615,6 +644,12 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
           if (m.permissionMode) {
             currentMode = modeFromSdk(m.permissionMode)
             emit({ type: "mode", mode: currentMode })
+            // "plan" carries no level information — keep the configured
+            // level in that case (levelFromSdk maps it to "default").
+            if (m.permissionMode !== "plan") {
+              currentLevel = levelFromSdk(m.permissionMode)
+              emit({ type: "permissionLevel", level: currentLevel })
+            }
           }
           if (m.session_id) emit({ type: "session", sessionId: m.session_id })
           // Initial context-usage fetch — gives the status bar a number
@@ -749,13 +784,7 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
             // Mode-switch detection mirrored from the assistant case
             // — Claude can call plan_enter/plan_exit mid-conversation
             // and we want the status line to reflect that ASAP.
-            if (block.name === "plan_enter" && currentMode !== "plan") {
-              currentMode = "plan"
-              emit({ type: "mode", mode: currentMode })
-            } else if (block.name === "plan_exit" && currentMode !== "default") {
-              currentMode = "default"
-              emit({ type: "mode", mode: currentMode })
-            }
+            detectModeSwitchTool(block.name)
             const id = nextDisplayId("tool")
             toolCallByUseId.set(block.id, id)
             currentMessageBlocks.set(idx, { kind: "tool_use", displayId: id, toolUseId: block.id })
@@ -920,6 +949,28 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
         })
       }
     },
+    async setPermissionLevel(level: PermissionLevel) {
+      try {
+        currentLevel = level
+        // In plan mode the wire value stays "plan" — the new level is
+        // remembered and applied when plan mode exits.
+        if (currentMode !== "plan") {
+          await q.setPermissionMode(effectiveSdkMode(currentMode, level))
+        }
+        emit({ type: "permissionLevel", level })
+        dlog("agent.permissionLevel.user", { level, mode: currentMode })
+      } catch (err) {
+        emit({
+          type: "appended",
+          item: {
+            kind: "error",
+            id: nextDisplayId("err"),
+            text: `setPermissionLevel failed: ${err instanceof Error ? err.message : String(err)}`,
+            createdAt: Date.now(),
+          },
+        })
+      }
+    },
     async setEffort(effort: EffortLevel | null) {
       try {
         // Runtime effort changes go through the settings channel — there
@@ -944,10 +995,10 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
     },
     async setMode(mode: AgentMode) {
       try {
-        await q.setPermissionMode(modeToSdk(mode))
+        await q.setPermissionMode(effectiveSdkMode(mode, currentLevel))
         currentMode = mode
         emit({ type: "mode", mode })
-        dlog("agent.mode.user", { mode })
+        dlog("agent.mode.user", { mode, level: currentLevel })
       } catch (err) {
         emit({
           type: "appended",

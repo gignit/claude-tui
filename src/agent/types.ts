@@ -134,6 +134,7 @@ export type AgentEvent =
   | { type: "model"; model: string }
   | { type: "effort"; effort: EffortLevel | null }
   | { type: "mode"; mode: import("./modes.ts").AgentMode }
+  | { type: "permissionLevel"; level: import("./modes.ts").PermissionLevel }
   | { type: "session"; sessionId: string }
   | { type: "context"; usage: ContextUsage }
 

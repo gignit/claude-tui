@@ -3,6 +3,7 @@
  * and the active model + key hints.
  */
 
+import { Show } from "solid-js"
 import { useTheme } from "../context/theme.tsx"
 import { useAgent } from "../context/agent.tsx"
 import { useExpand } from "../context/expand.tsx"
@@ -47,15 +48,19 @@ export function StatusLine() {
     return e ? `${m} (${e})` : m
   }
   const modeStr = () => modeLabel(agent.mode())
-  // Plan and Bypass are meaningful behavior changes — color them
-  // distinctly so the user can't miss which one they're in. Bypass gets
-  // the error red: nothing will prompt before running.
-  const modeColor = () => {
-    const m = agent.mode()
-    if (m === "bypass") return theme.error
-    if (m === "plan") return theme.warn
-    return theme.accent
+  // Plan mode is a meaningful behavior change — color it distinctly so
+  // the user can't miss when they're in it.
+  const modeColor = () => (agent.mode() === "plan" ? theme.warn : theme.accent)
+  // Permission level is orthogonal to mode and only shown when it
+  // deviates from the default prompting behavior. Bypass gets the
+  // error red: nothing will prompt before running.
+  const levelStr = () => {
+    const l = agent.permissionLevel()
+    if (l === "accept") return "accept-edits"
+    if (l === "bypass") return "BYPASS"
+    return ""
   }
+  const levelColor = () => (agent.permissionLevel() === "bypass" ? theme.error : theme.warn)
   // Show the *target* of pressing Tab so the action is obvious without
   // requiring the user to remember which mode they're currently in.
   const tabHint = () => `tab > ${modeLabel(nextMode(agent.mode())).toLowerCase()}`
@@ -80,6 +85,10 @@ export function StatusLine() {
   return (
     <box flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1} backgroundColor={theme.backgroundElement}>
       <text fg={modeColor()}>{modeStr()}</text>
+      <Show when={levelStr()}>
+        <text fg={theme.textDim}>{" · "}</text>
+        <text fg={levelColor()}>{levelStr()}</text>
+      </Show>
       <text fg={theme.textDim}>{"  "}</text>
       <text fg={statusColor()}>{statusLabel()}</text>
       <text fg={theme.textDim}>{"  "}</text>

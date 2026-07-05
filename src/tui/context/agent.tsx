@@ -24,7 +24,7 @@ import type {
   PermissionRequest,
   QuestionRequest,
 } from "../../agent/types.ts"
-import { type AgentMode, nextMode } from "../../agent/modes.ts"
+import { type AgentMode, type PermissionLevel, levelFromSdk, levelToSdk, nextMode } from "../../agent/modes.ts"
 import { saveState } from "../../util/state-store.ts"
 import { readSessionHistory } from "../../util/sessions.ts"
 import { dlog } from "../../util/debug-log.ts"
@@ -45,6 +45,10 @@ export interface AgentContextValue {
   effort: () => EffortLevel | null
   /** Active agent mode (Default ↔ Plan). Defaults to "default" until init. */
   mode: () => AgentMode
+  /** User-set permission level — orthogonal to mode, changed only via /permissions. */
+  permissionLevel: () => PermissionLevel
+  /** Set the permission level; applies live and persists for future launches. */
+  setPermissionLevel: (level: PermissionLevel) => Promise<void>
   /** Session UUID reported by the SDK init event, or null pre-init. */
   sessionId: () => string | null
   /** Working directory the agent was started with — for session-list scoping. */
@@ -98,6 +102,9 @@ export function AgentProvider(props: AgentProviderProps) {
   // truth: what we sent at spawn, updated on every setEffort().
   const [effort, setEffortSignal] = createSignal<EffortLevel | null>(props.config.effort ?? null)
   const [mode, setModeSignal] = createSignal<AgentMode>("default")
+  const [permissionLevel, setPermissionLevelSignal] = createSignal<PermissionLevel>(
+    levelFromSdk(props.config.permissionMode ?? undefined),
+  )
   const [sessionId, setSessionIdSignal] = createSignal<string | null>(null)
   const [contextUsage, setContextUsageSignal] = createSignal<ContextUsage | null>(null)
 
@@ -175,6 +182,9 @@ export function AgentProvider(props: AgentProviderProps) {
           case "mode":
             setModeSignal(evt.mode)
             break
+          case "permissionLevel":
+            setPermissionLevelSignal(evt.level)
+            break
           case "session":
             setSessionIdSignal(evt.sessionId)
             break
@@ -205,6 +215,14 @@ export function AgentProvider(props: AgentProviderProps) {
     model,
     effort,
     mode,
+    permissionLevel,
+    setPermissionLevel: async (level) => {
+      await client?.setPermissionLevel(level)
+      // Persist in SDK spelling so the next launch spawns with it —
+      // this is the durable answer to the CLI alias
+      // `claude --dangerously-skip-permissions`.
+      saveState({ permissionMode: levelToSdk(level) })
+    },
     sessionId,
     contextUsage,
     cwd: () => props.config.cwd ?? process.cwd(),
