@@ -227,8 +227,17 @@ export function Prompt(props: { disabled?: boolean }) {
     if (acOpen()) {
       const sel = acSelected()
       if (sel) {
-        dlog("prompt.autocomplete.enter", { value: sel.spec.value })
-        command.trigger(sel.spec.value)
+        // Forward anything typed after the command token as args —
+        // the autocomplete stays open while args are being typed
+        // (it matches on the head token only), so without this,
+        // "/permissions bypass" triggered as a bare "/permissions".
+        const raw = value().trim()
+        const spaceIdx = raw.search(/\s/)
+        const args = spaceIdx === -1 ? "" : raw.slice(spaceIdx + 1).trim()
+        dlog("prompt.autocomplete.enter", { value: sel.spec.value, args })
+        pushHistory(raw)
+        histIndex = null
+        command.trigger(sel.spec.value, args || undefined)
         reset()
         return
       }
