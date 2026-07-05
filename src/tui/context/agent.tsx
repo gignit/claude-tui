@@ -245,6 +245,13 @@ export function AgentProvider(props: AgentProviderProps) {
         })
       }
       startClient({ resume: id })
+      // Seed the session id immediately — resuming keeps the same id,
+      // and waiting for the SDK's init event (which may not arrive
+      // until the first turn) left /rewind and /fork refusing with
+      // "no active session" right after a resume. init still confirms
+      // or corrects it when it lands. (forkSession deliberately does
+      // NOT do this: the fork gets a NEW id only init can tell us.)
+      setSessionIdSignal(id)
       // startClient already cleared the items store; refill with the
       // historical items we just parsed. The next live event from the
       // resumed subprocess will append after these.
@@ -309,6 +316,10 @@ export function AgentProvider(props: AgentProviderProps) {
         }
       }
       startClient({ resume: id, resumeAt: point.anchorUuid })
+      // Same optimistic seed as resumeSession — rewinding continues the
+      // same session id, and a follow-up /rewind or /fork shouldn't have
+      // to wait for the init event.
+      setSessionIdSignal(id)
       const truncated = history.slice(0, cut)
       if (truncated.length > 0) {
         setItems(produce((arr) => {
