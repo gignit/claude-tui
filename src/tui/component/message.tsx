@@ -23,6 +23,7 @@ import type {
   ErrorDisplayItem,
   SystemNoticeDisplayItem,
   ToolCallDisplayItem,
+  TurnStampDisplayItem,
   UserDisplayMessage,
 } from "../../agent/types.ts"
 
@@ -36,11 +37,36 @@ export function MessageView(props: { item: DisplayItem }) {
       return <AssistantBubble msg={props.item} />
     case "tool_call":
       return <ToolCallBlock item={props.item} />
+    case "turn_stamp":
+      return <TurnStamp item={props.item} />
     case "system":
       return <SystemNotice item={props.item} />
     case "error":
       return <ErrorNotice item={props.item} />
   }
+}
+
+/**
+ * Dim one-liner closing an assistant turn: "Default • claude-fable-5".
+ * Emitted once per request cycle (user submission → result), so the
+ * attribution reads as a turn footer instead of repeating under every
+ * bubble the cycle produced.
+ */
+function TurnStamp(props: { item: TurnStampDisplayItem }) {
+  const theme = useTheme()
+  const label = () => {
+    const parts: string[] = []
+    if (props.item.mode) parts.push(modeLabel(props.item.mode))
+    if (props.item.model) parts.push(props.item.model)
+    return parts.join(" • ")
+  }
+  return (
+    <Show when={label()}>
+      <box marginTop={1} flexShrink={0}>
+        <text fg={theme.textDim}>{label()}</text>
+      </box>
+    </Show>
+  )
 }
 
 function UserBubble(props: { msg: UserDisplayMessage }) {
@@ -146,14 +172,8 @@ function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
       <Show when={!props.msg.complete}>
         <text fg={theme.thinking}>{"..."}</text>
       </Show>
-      <Show when={props.msg.complete && (props.msg.model || props.msg.mode)}>
-        {(() => {
-          const parts: string[] = []
-          if (props.msg.mode) parts.push(modeLabel(props.msg.mode))
-          if (props.msg.model) parts.push(props.msg.model)
-          return <text fg={theme.textDim}>{parts.join(" • ")}</text>
-        })()}
-      </Show>
+      {/* Attribution moved to the per-turn TurnStamp item — a cycle can
+          produce many bubbles but only ever one model/mode. */}
     </box>
     </Show>
   )

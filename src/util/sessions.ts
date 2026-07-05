@@ -192,6 +192,23 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
   // bodies onto them as we encounter them later in the JSONL — matching
   // the live SDK behavior in src/agent/client.ts.
   const callsByUseId = new Map<string, ToolCallDisplayItem>()
+  // Turn-stamp bookkeeping, mirroring the live client: one attribution
+  // line per request cycle. The JSONL has no result markers, so a new
+  // user text message (or EOF) closes the previous cycle. Mode isn't
+  // recorded on disk — replay stamps carry the model only.
+  let stampModel: string | undefined
+  let sawAssistant = false
+  const closeTurn = (createdAt: number) => {
+    if (!sawAssistant) return
+    items.push({
+      kind: "turn_stamp",
+      id: nextId("turn"),
+      ...(stampModel ? { model: stampModel } : {}),
+      createdAt,
+    })
+    sawAssistant = false
+    stampModel = undefined
+  }
 
   for (const raw of text.split("\n")) {
     if (!raw.trim()) continue
@@ -228,9 +245,11 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
           }
         }
       }
-      // 2. Plain user text — render as a user bubble.
+      // 2. Plain user text — render as a user bubble, closing the
+      //    previous assistant turn with its stamp first.
       const userText = extractUserText(content)
       if (userText) {
+        closeTurn(createdAt)
         items.push({
           kind: "user",
           id: nextId("user"),
@@ -246,6 +265,8 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
     let bubbleText = ""
     let thinking = ""
     const turnModel = typeof entry.message?.model === "string" ? entry.message.model : undefined
+    sawAssistant = true
+    if (turnModel) stampModel = turnModel
     for (const block of content) {
       if (block?.type === "text" && typeof block.text === "string") {
         bubbleText += block.text
@@ -281,6 +302,8 @@ export async function readSessionHistory(cwd: string, sessionId: string): Promis
       })
     }
   }
+  // Close the final turn — there's no trailing user message to do it.
+  closeTurn(Date.now())
 
   return items
 }

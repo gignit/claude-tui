@@ -377,6 +377,12 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
   // setPermissionLevel() changes this — mode flips never touch it; the
   // level is folded back into the wire value whenever plan mode exits.
   let currentLevel: PermissionLevel = levelFromSdk(sdkOptions.permissionMode)
+  // Attribution for the in-flight request cycle (user submission →
+  // `result`). Captured from the first assistant activity of the cycle
+  // and emitted as ONE turn_stamp item when `result` arrives — the
+  // model can't change mid-cycle, so per-bubble stamps were noise.
+  let turnStampModel: string | undefined
+  let turnStampMode: AgentMode | null = null
 
   /**
    * React to Claude invoking the built-in plan_enter/plan_exit tools —
@@ -448,6 +454,8 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
         const beta = msg.message
         const turnModel = typeof beta.model === "string" ? beta.model : undefined
         const turnMode = currentMode
+        if (turnModel) turnStampModel = turnModel
+        if (turnStampMode === null) turnStampMode = turnMode
         const claimStreamed = (kind: "text" | "thinking") => {
           for (const idx of [...currentMessageBlocks.keys()].sort((a, b) => a - b)) {
             const st = currentMessageBlocks.get(idx)!
@@ -621,6 +629,23 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
           emit({ type: "updated", id: currentAssistantId, patch: { complete: true } as Partial<DisplayItem> })
           currentAssistantId = null
         }
+        // One attribution stamp for the whole request cycle. Skipped
+        // when the cycle produced no assistant activity (e.g. a local
+        // command result).
+        if (turnStampMode !== null || turnStampModel) {
+          emit({
+            type: "appended",
+            item: {
+              kind: "turn_stamp",
+              id: nextDisplayId("turn"),
+              ...(turnStampModel ? { model: turnStampModel } : {}),
+              ...(turnStampMode !== null ? { mode: turnStampMode } : {}),
+              createdAt: Date.now(),
+            },
+          })
+        }
+        turnStampModel = undefined
+        turnStampMode = null
         emit({ type: "status", status: { kind: "idle" } })
         // Refresh context usage after every turn ends — that's when it
         // could have changed (new prompt + assistant text + tool calls).
@@ -742,6 +767,8 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
           // e.g. text → tool_use → result → text.)
           currentMessageBlocks = new Map()
           streamingTurnModel = typeof evt.message.model === "string" ? evt.message.model : undefined
+          if (streamingTurnModel) turnStampModel = streamingTurnModel
+          if (turnStampMode === null) turnStampMode = currentMode
           break
         }
         if (evt.type === "content_block_start") {

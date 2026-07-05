@@ -10,6 +10,7 @@ export type DisplayItem =
   | UserDisplayMessage
   | AssistantDisplayMessage
   | ToolCallDisplayItem
+  | TurnStampDisplayItem
   | SystemNoticeDisplayItem
   | ErrorDisplayItem
 
@@ -67,6 +68,22 @@ export interface ToolCallDisplayItem {
    * together — even when multiple parallel tools interleave on the wire.
    */
   result?: { output: string; isError: boolean }
+  createdAt: number
+}
+
+/**
+ * One dim attribution line rendered at the END of each assistant turn
+ * ("Default • claude-fable-5"). A turn is everything between a user
+ * submission and the SDK's `result` event; the model can't change
+ * mid-turn, so stamping once per turn (not per bubble) keeps the
+ * scrollback quiet even when text/tool interleaving produces many
+ * assistant bubbles.
+ */
+export interface TurnStampDisplayItem {
+  kind: "turn_stamp"
+  id: DisplayMessageId
+  model?: string
+  mode?: import("./modes.ts").AgentMode
   createdAt: number
 }
 
