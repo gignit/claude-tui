@@ -48,6 +48,13 @@ export interface PersistedState {
    * Capped at PROMPT_HISTORY_MAX entries on write.
    */
   promptHistory?: string[]
+  /**
+   * Startup permission mode (SDK spelling: default | acceptEdits |
+   * plan | bypassPermissions). Set via `/permissions <mode>`; the
+   * `--permission-mode` / `--dangerously-skip-permissions` flags
+   * override it for one launch. Undefined → "default".
+   */
+  permissionMode?: string
 }
 
 /** Cap for promptHistory — enough for real recall, small enough to keep

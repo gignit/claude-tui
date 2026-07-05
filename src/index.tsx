@@ -19,6 +19,7 @@ import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { runTui } from "./tui/app.tsx"
 import { EFFORT_LEVELS } from "./agent/types.ts"
+import { parsePermissionMode } from "./agent/modes.ts"
 import { loadState, statePath } from "./util/state-store.ts"
 import { initDebugLog } from "./util/debug-log.ts"
 
@@ -27,6 +28,7 @@ interface Argv {
   model?: string
   bin?: string
   scrollSpeed?: number
+  permissionMode?: string
   debug: boolean
   debugLog?: string
   help: boolean
@@ -59,6 +61,12 @@ function parseArgs(argv: readonly string[]): Argv {
     } else if (a === "--debug-log" && argv[i + 1]) {
       out.debugLog = argv[++i]!
       out.debug = true
+    } else if (a === "--permission-mode" && argv[i + 1]) {
+      out.permissionMode = argv[++i]!
+    } else if (a.startsWith("--permission-mode=")) {
+      out.permissionMode = a.slice("--permission-mode=".length)
+    } else if (a === "--dangerously-skip-permissions" || a === "--yolo") {
+      out.permissionMode = "bypass"
     } else if (a === "--scroll-speed" && argv[i + 1]) {
       out.scrollSpeed = Number.parseInt(argv[++i]!, 10)
     } else if (a.startsWith("--model=")) {
@@ -89,6 +97,9 @@ function printHelp(): void {
       "  --model <id>          Model id (default: persisted choice, else `claude` default)",
       "  --bin <path>          Path to the `claude` binary (default: auto-detect from",
       "                        PATH or ~/.local/bin/claude; override with $CLAUDE_TUI_BIN)",
+      "  --permission-mode <m> default | accept | plan | bypass (persisted /permissions",
+      "                        choice is used when the flag is omitted)",
+      "  --dangerously-skip-permissions   shorthand for --permission-mode bypass",
       "  --scroll-speed <n>    Mouse-wheel lines per tick (1-20, default 3). Persists.",
       `  --debug               Log every event to ${DEFAULT_DEBUG_LOG}`,
       "                        and surface SDK subprocess stderr in the TUI",
@@ -98,7 +109,7 @@ function printHelp(): void {
       "Hotkeys:",
       "  Enter                 submit message",
       "  Ctrl+J / Shift+Enter  insert a newline",
-      "  Tab                   cycle agent mode (Default ↔ Plan)",
+      "  Tab                   cycle agent mode (Default → Accept Edits → Plan)",
       "  Ctrl+K                open the command menu",
       "  /                     slash-command autocomplete in the prompt",
       "  Ctrl+O                toggle expand / collapse all tool output",
@@ -158,10 +169,22 @@ async function main() {
   // union may change across versions and a stale value would error the
   // whole query() spawn.
   const effort = EFFORT_LEVELS.find((l) => l === persisted.effort)
+  // Permission mode: flag > persisted (/permissions) > SDK default.
+  // Unrecognized values warn and fall through rather than silently
+  // granting more or less than the user asked for.
+  const rawPermission = args.permissionMode ?? persisted.permissionMode
+  const permissionMode = rawPermission ? parsePermissionMode(rawPermission) : undefined
+  if (rawPermission && !permissionMode) {
+    process.stderr.write(
+      `claude-tui: unknown permission mode '${rawPermission}' — using default. ` +
+        `Valid: default, accept, plan, bypass\n`,
+    )
+  }
   await runTui({
     cwd: args.cwd,
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
     ...(args.bin ? { pathToClaudeCodeExecutable: args.bin } : {}),
     ...(args.scrollSpeed !== undefined && Number.isFinite(args.scrollSpeed)
       ? { scrollSpeed: args.scrollSpeed }

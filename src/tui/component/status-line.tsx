@@ -47,9 +47,15 @@ export function StatusLine() {
     return e ? `${m} (${e})` : m
   }
   const modeStr = () => modeLabel(agent.mode())
-  // Plan mode is a meaningful behavior change — color it distinctly so
-  // the user can't miss when they're in it.
-  const modeColor = () => (agent.mode() === "plan" ? theme.warn : theme.accent)
+  // Plan and Bypass are meaningful behavior changes — color them
+  // distinctly so the user can't miss which one they're in. Bypass gets
+  // the error red: nothing will prompt before running.
+  const modeColor = () => {
+    const m = agent.mode()
+    if (m === "bypass") return theme.error
+    if (m === "plan") return theme.warn
+    return theme.accent
+  }
   // Show the *target* of pressing Tab so the action is obvious without
   // requiring the user to remember which mode they're currently in.
   const tabHint = () => `tab > ${modeLabel(nextMode(agent.mode())).toLowerCase()}`

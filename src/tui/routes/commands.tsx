@@ -22,6 +22,8 @@ import { DialogVariantList } from "../component/dialog-variant.tsx"
 import { DialogSessionList } from "../component/dialog-session.tsx"
 import { DialogRewindList } from "../component/dialog-rewind.tsx"
 import { MAX_SCROLL_SPEED, MIN_SCROLL_SPEED } from "../../util/scroll.ts"
+import { modeFromSdk, modeLabel, parsePermissionMode } from "../../agent/modes.ts"
+import { saveState } from "../../util/state-store.ts"
 
 interface BuiltinDeps {
   command: ReturnType<typeof useCommand>
@@ -101,6 +103,39 @@ function buildSpecs(deps: BuiltinDeps): CommandSpec[] {
       opensDialog: true,
       onSelect: () => {
         dialog.push(() => <DialogSessionList />, { title: "Switch session" })
+      },
+    },
+    {
+      value: "agent.permissions",
+      title: "Set permission mode",
+      description: "default (prompt) · accept (auto-approve edits) · plan · bypass (no prompts, like --dangerously-skip-permissions). Persists.",
+      category: "Agent",
+      slash: { name: "permissions", aliases: ["permission-mode", "yolo"] },
+      onSelect: (args) => {
+        dialog.clear()
+        const trimmed = (args ?? "").trim()
+        if (!trimmed) {
+          agent.pushNotice(
+            `/permissions: current mode is ${modeLabel(agent.mode())}\n` +
+              `  usage: /permissions <default|accept|plan|bypass>\n` +
+              `  (or launch with --permission-mode <mode> / --dangerously-skip-permissions)`,
+          )
+          return
+        }
+        const sdkMode = parsePermissionMode(trimmed)
+        if (!sdkMode) {
+          agent.pushNotice(`/permissions: unknown mode '${trimmed}' — valid: default, accept, plan, bypass`)
+          return
+        }
+        void agent.setMode(modeFromSdk(sdkMode)).then(() => {
+          // Persist so the next launch starts in this mode — this is
+          // the config-file answer to `alias claude='claude
+          // --dangerously-skip-permissions'` for the TUI.
+          saveState({ permissionMode: sdkMode })
+          agent.pushNotice(
+            `/permissions: ${modeLabel(modeFromSdk(sdkMode))} (saved — future sessions start this way)`,
+          )
+        })
       },
     },
     {

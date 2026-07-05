@@ -150,7 +150,7 @@ Bun ≥ 1.2 is required.
 | `Enter`              | Submit message                                            |
 | `Ctrl+J`             | Insert a newline in the prompt                            |
 | `Shift+Enter`        | Insert a newline (terminal-permitting fallback)           |
-| `Tab`                | Cycle agent mode (Default ↔ Plan)                         |
+| `Tab`                | Cycle agent mode (Default → Accept Edits → Plan)          |
 | `Ctrl+K`             | Open the command menu                                     |
 | `/`                  | Slash-command autocomplete in the prompt                  |
 | `Ctrl+O`             | Toggle expand/collapse all tool output                    |
@@ -175,6 +175,7 @@ Bun ≥ 1.2 is required.
 | `/fork`     | Branch the conversation into a new session                        |
 | `/rewind`   | Restore files + conversation to a past turn                       |
 | `/context`  | Show context usage (live count + CLI breakdown)                   |
+| `/permissions` | Set permission mode: `default`, `accept`, `plan`, `bypass` (persists) |
 | `/compact`  | Summarize the conversation to reclaim context window space        |
 | `/markdown-legacy` | Fall back to the pre-opentui-0.4 markdown renderer         |
 | `/help`     | Local-command reference                                           |

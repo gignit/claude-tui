@@ -219,6 +219,12 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
         : {}),
     },
     permissionMode: config.permissionMode ?? "default",
+    // The SDK refuses `bypassPermissions` unless this acknowledgment is
+    // set (its `--dangerously-skip-permissions` safety latch). We set it
+    // unconditionally — it does NOT change behavior by itself, it only
+    // permits bypass — so `/permissions bypass` can switch a running
+    // session via setPermissionMode without a restart.
+    allowDangerouslySkipPermissions: true,
     // Without these two options the SDK runs in "isolation mode": a
     // minimal system prompt and NO filesystem settings — no CLAUDE.md,
     // no ~/.claude/settings.json, no project .claude/ config. claude-tui

@@ -23,6 +23,8 @@ export interface RunOptions {
   model?: string
   /** Optional reasoning-effort variant. Undefined → model default. */
   effort?: import("../agent/types.ts").EffortLevel
+  /** Startup permission mode (SDK spelling). Undefined → "default". */
+  permissionMode?: import("../agent/modes.ts").SdkPermissionMode
   pathToClaudeCodeExecutable?: string
   /** Optional override for mouse-wheel scroll speed (lines per tick). */
   scrollSpeed?: number
@@ -41,6 +43,7 @@ export async function runTui(opts: RunOptions): Promise<void> {
                     cwd: opts.cwd,
                     ...(opts.model ? { model: opts.model } : {}),
                     ...(opts.effort ? { effort: opts.effort } : {}),
+                    ...(opts.permissionMode ? { permissionMode: opts.permissionMode } : {}),
                     ...(opts.pathToClaudeCodeExecutable
                       ? { pathToClaudeCodeExecutable: opts.pathToClaudeCodeExecutable }
                       : {}),
