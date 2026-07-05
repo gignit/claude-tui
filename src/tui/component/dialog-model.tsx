@@ -9,6 +9,7 @@ import { useDialog } from "../context/dialog.tsx"
 import { useAgent } from "../context/agent.tsx"
 import { useTheme } from "../context/theme.tsx"
 import { DialogSelect, type DialogSelectOption } from "./dialog-select.tsx"
+import { DialogVariantList } from "./dialog-variant.tsx"
 
 export function DialogModelList() {
   const dialog = useDialog()
@@ -44,6 +45,14 @@ export function DialogModelList() {
         onSelect={async (opt) => {
           await agent.setModel(opt.value)
           dialog.clear()
+          // Chain into the variant picker when the chosen model has
+          // effort levels to offer — model and variant are one decision
+          // ("which brain, how hard should it think"). Models without
+          // effort support skip straight back to the prompt.
+          const picked = (models() ?? []).find((m) => m.id === opt.value)
+          if (picked?.supportedEffortLevels && picked.supportedEffortLevels.length > 0) {
+            dialog.push(() => <DialogVariantList />, { title: "Reasoning effort" })
+          }
         }}
       />
     </Show>

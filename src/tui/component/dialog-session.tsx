@@ -37,7 +37,11 @@ export function DialogSessionList() {
       // Previews are first-user-message text and frequently very long.
       // Hard-truncate so each row stays exactly one line.
       title: truncate(s.preview || "(no preview)", PREVIEW_MAX),
-      subtitle: shortId(s.id) + (s.firstAt ? "  " + relativeTime(s.firstAt) : ""),
+      // The list is sorted by last activity (file mtime, newest first)
+      // — show that same timestamp so the ordering reads as intended.
+      // Showing the first-message time here made a fresh update to an
+      // old session look out of place.
+      subtitle: shortId(s.id) + "  updated " + relativeTimeMs(s.mtimeMs),
       hint: s.id === agent.sessionId() ? "active" : "",
     }))
   }
@@ -62,9 +66,8 @@ function shortId(uuid: string): string {
   return uuid.slice(0, 8)
 }
 
-function relativeTime(iso: string): string {
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return ""
+function relativeTimeMs(t: number): string {
+  if (!Number.isFinite(t)) return ""
   const diffMs = Date.now() - t
   const sec = Math.round(diffMs / 1000)
   if (sec < 60) return `${sec}s ago`

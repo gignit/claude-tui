@@ -154,9 +154,10 @@ Bun ≥ 1.2 is required.
 | `Ctrl+K`             | Open the command menu                                     |
 | `/`                  | Slash-command autocomplete in the prompt                  |
 | `Ctrl+O`             | Toggle expand/collapse all tool output                    |
+| `Up` / `Down`        | Recall prompt history (when the prompt is untouched)      |
 | `Ctrl+C`             | Clear the prompt; if empty, quit                          |
 | `Ctrl+D`             | Quit                                                      |
-| `Esc`                | Close the topmost dialog                                  |
+| `Esc`                | Stop the in-flight response; or close the topmost dialog  |
 | `PageUp` / `PageDown`| Scroll the message log                                    |
 | `Ctrl+Home` / `End`  | Jump to top / bottom                                      |
 | `y` / `n`            | Allow / deny when a permission prompt is showing          |
@@ -169,7 +170,13 @@ Bun ≥ 1.2 is required.
 | ----------- | ----------------------------------------------------------------- |
 | `/menu`     | Open the command menu (also `/commands`, `/palette` as aliases)   |
 | `/models`   | Pick a model from your account's available list                   |
-| `/sessions` | Resume a previous conversation in the current project             |
+| `/variant`  | Set the model's reasoning-effort variant (low…max)                |
+| `/sessions` | Resume a previous conversation (most recently updated first)      |
+| `/fork`     | Branch the conversation into a new session                        |
+| `/rewind`   | Restore files + conversation to a past turn                       |
+| `/context`  | Show context usage (live count + CLI breakdown)                   |
+| `/compact`  | Summarize the conversation to reclaim context window space        |
+| `/markdown-legacy` | Fall back to the pre-opentui-0.4 markdown renderer         |
 | `/help`     | Local-command reference                                           |
 
 Anything else starting with `/` is forwarded as plain text to claude, so
@@ -199,12 +206,11 @@ things I'd love to see PRs for:
   JSON theme loader + selector would be welcome.
 - **Syntax highlighting** in tool output (opentui has `<code>` and
   `<markdown>` intrinsics waiting to be wired in).
-- **Command history** in the prompt (Up/Down for previous submissions).
 - **Filename / @-mention autocomplete** in the prompt.
 - **Pasted content summarization** (long pastes → `[Pasted N lines]`).
 - **Image paste** support.
-- **`/diff`, `/redo`, `/fork`** — opencode-style session navigation.
-- **Status bar polish** — context window usage, token count, cost.
+- **`/diff`** — show the working-tree diff inline (opentui has a `<diff>` renderable).
+- **Status bar polish** — cost, rate-limit windows (SDK exposes both).
 - **Multi-workspace support** — list and switch between project dirs.
 - **Tests** — currently none.
 

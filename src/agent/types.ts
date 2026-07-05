@@ -104,6 +104,26 @@ export interface ContextUsage {
   percentage: number
 }
 
+/**
+ * Reasoning-effort variant. Mirrors the SDK's EffortLevel union; kept as
+ * a display-layer copy so the TUI never imports SDK wire types. `null`
+ * in signals/state means "model default" (we never sent an override).
+ */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max"
+
+export const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"]
+
+/** Display-layer slice of the SDK's ModelInfo. */
+export interface ModelChoice {
+  id: string
+  displayName: string
+  description: string
+  /** Canonical wire id an alias row resolves to (e.g. "sonnet" → "claude-sonnet-5"). */
+  resolvedModel?: string
+  /** Variants this model supports; empty/undefined → no effort support reported. */
+  supportedEffortLevels?: EffortLevel[]
+}
+
 /** High-level events the agent client emits to the TUI. */
 export type AgentEvent =
   | { type: "appended"; item: DisplayItem }
@@ -112,6 +132,7 @@ export type AgentEvent =
   | { type: "permission"; request: PermissionRequest }
   | { type: "question"; request: QuestionRequest }
   | { type: "model"; model: string }
+  | { type: "effort"; effort: EffortLevel | null }
   | { type: "mode"; mode: import("./modes.ts").AgentMode }
   | { type: "session"; sessionId: string }
   | { type: "context"; usage: ContextUsage }
@@ -121,6 +142,7 @@ export type AgentStatus =
   | { kind: "thinking" }
   | { kind: "streaming" }
   | { kind: "tool_running"; toolName: string }
+  | { kind: "compacting" }
   | { kind: "error"; message: string }
 
 export interface PermissionRequest {

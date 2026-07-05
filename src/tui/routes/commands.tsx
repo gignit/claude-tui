@@ -18,7 +18,9 @@ import { useDialog, type DialogContext } from "../context/dialog.tsx"
 import { useAgent } from "../context/agent.tsx"
 import { useSettings } from "../context/settings.tsx"
 import { DialogModelList } from "../component/dialog-model.tsx"
+import { DialogVariantList } from "../component/dialog-variant.tsx"
 import { DialogSessionList } from "../component/dialog-session.tsx"
+import { DialogRewindList } from "../component/dialog-rewind.tsx"
 import { MAX_SCROLL_SPEED, MIN_SCROLL_SPEED } from "../../util/scroll.ts"
 
 interface BuiltinDeps {
@@ -80,6 +82,17 @@ function buildSpecs(deps: BuiltinDeps): CommandSpec[] {
       },
     },
     {
+      value: "model.variant",
+      title: "Set reasoning effort",
+      description: "Pick the model's effort variant (low/medium/high/xhigh/max, or default)",
+      category: "Agent",
+      slash: { name: "variant", aliases: ["effort"] },
+      opensDialog: true,
+      onSelect: () => {
+        dialog.push(() => <DialogVariantList />, { title: "Reasoning effort" })
+      },
+    },
+    {
       value: "session.list",
       title: "Switch session",
       description: "Resume a previous conversation in this project",
@@ -88,6 +101,74 @@ function buildSpecs(deps: BuiltinDeps): CommandSpec[] {
       opensDialog: true,
       onSelect: () => {
         dialog.push(() => <DialogSessionList />, { title: "Switch session" })
+      },
+    },
+    {
+      value: "session.fork",
+      title: "Fork session",
+      description: "Branch the conversation into a new session; the original stays untouched",
+      category: "Session",
+      slash: { name: "fork" },
+      onSelect: () => {
+        dialog.clear()
+        if (!agent.sessionId()) {
+          agent.pushNotice("/fork: no active session yet — send a message first")
+          return
+        }
+        void agent.forkSession().then(() => {
+          agent.pushNotice("/fork: branched into a new session (original preserved)")
+        })
+      },
+    },
+    {
+      value: "session.rewind",
+      title: "Rewind conversation",
+      description: "Pick a past turn; restore files to it and drop everything after",
+      category: "Session",
+      slash: { name: "rewind", aliases: ["undo"] },
+      opensDialog: true,
+      onSelect: () => {
+        if (!agent.sessionId()) {
+          agent.pushNotice("/rewind: no active session yet — send a message first")
+          dialog.clear()
+          return
+        }
+        dialog.push(() => <DialogRewindList />, { title: "Rewind" })
+      },
+    },
+    {
+      value: "session.context",
+      title: "Show context usage",
+      description: "Claude Code's /context breakdown plus the live token count",
+      category: "Session",
+      slash: { name: "context", aliases: ["ctx"] },
+      onSelect: () => {
+        dialog.clear()
+        const u = agent.contextUsage()
+        if (u) {
+          agent.pushNotice(
+            `context: ${u.totalTokens.toLocaleString()} of ${u.maxTokens.toLocaleString()} tokens (${Math.round(u.percentage)}%)`,
+          )
+        }
+        // Forward to the CLI for the full per-category breakdown —
+        // the response arrives as a local_command_output system
+        // message, which the client renders as an info notice.
+        agent.submit("/context")
+      },
+    },
+    {
+      value: "session.compact",
+      title: "Compact context",
+      description: "Summarize the conversation to reclaim context window space",
+      category: "Session",
+      slash: { name: "compact" },
+      onSelect: (args) => {
+        dialog.clear()
+        // Forward to the CLI (supports an optional focus instruction:
+        // `/compact keep the debugging details`). Progress shows via
+        // the 'compacting' status; the compact_boundary system message
+        // reports the token delta when done.
+        agent.submit(args && args.trim() ? `/compact ${args.trim()}` : "/compact")
       },
     },
     {
@@ -125,6 +206,19 @@ function buildSpecs(deps: BuiltinDeps): CommandSpec[] {
         const next = parseToggleArg(args, settings.markdown())
         settings.setMarkdown(next)
         agent.pushNotice(`/markdown: ${next ? "on" : "off"} (saved)`)
+        dialog.clear()
+      },
+    },
+    {
+      value: "settings.markdown_legacy",
+      title: "Toggle legacy markdown renderer",
+      description: "Fall back to the pre-opentui-0.4 segment renderer (hand-rolled rules/blockquotes). Persists.",
+      category: "Settings",
+      slash: { name: "markdown-legacy", aliases: ["md-legacy"] },
+      onSelect: (args) => {
+        const next = parseToggleArg(args, settings.markdownLegacy())
+        settings.setMarkdownLegacy(next)
+        agent.pushNotice(`/markdown-legacy: ${next ? "on (legacy segment renderer)" : "off (opentui native)"} (saved)`)
         dialog.clear()
       },
     },

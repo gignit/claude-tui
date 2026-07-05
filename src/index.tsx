@@ -18,6 +18,7 @@
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { runTui } from "./tui/app.tsx"
+import { EFFORT_LEVELS } from "./agent/types.ts"
 import { loadState, statePath } from "./util/state-store.ts"
 import { initDebugLog } from "./util/debug-log.ts"
 
@@ -101,9 +102,10 @@ function printHelp(): void {
       "  Ctrl+K                open the command menu",
       "  /                     slash-command autocomplete in the prompt",
       "  Ctrl+O                toggle expand / collapse all tool output",
+      "  Up / Down             recall prompt history (when the prompt is untouched)",
       "  Ctrl+C                clear the prompt; if empty, quit",
       "  Ctrl+D                quit",
-      "  Esc                   close the topmost dialog",
+      "  Esc                   stop the in-flight response; or close the top dialog",
       "  PageUp / PageDown     scroll the message log (mouse wheel also works)",
       "  Ctrl+Home / End       jump to top / bottom",
       "  y / n                 allow / deny when a permission prompt is showing",
@@ -112,7 +114,12 @@ function printHelp(): void {
       "Slash commands (typed into the prompt):",
       "  /menu                 open the command menu (also Ctrl+K)",
       "  /models               pick a model from your account's available list",
-      "  /sessions             resume a previous conversation in the current project",
+      "  /variant              set the model's reasoning-effort variant (low..max)",
+      "  /sessions             resume a previous conversation (most recently updated first)",
+      "  /fork                 branch the conversation into a new session",
+      "  /rewind               restore files + conversation to a past turn",
+      "  /context              show context usage (live count + CLI breakdown)",
+      "  /compact              summarize the conversation to reclaim context",
       "  /scroll <n>           set mouse-wheel scroll speed (1-20 lines per tick)",
       "  /markdown [on|off]    toggle markdown rendering of assistant messages (default on)",
       "  /markdown-stream [on|off]   render markdown live during streaming (on) or only when",
@@ -147,9 +154,14 @@ async function main() {
   }
   const persisted = loadState()
   const model = args.model ?? persisted.model // undefined → SDK uses claude's default
+  // Only forward a persisted effort if it's still a valid level — the
+  // union may change across versions and a stale value would error the
+  // whole query() spawn.
+  const effort = EFFORT_LEVELS.find((l) => l === persisted.effort)
   await runTui({
     cwd: args.cwd,
     ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
     ...(args.bin ? { pathToClaudeCodeExecutable: args.bin } : {}),
     ...(args.scrollSpeed !== undefined && Number.isFinite(args.scrollSpeed)
       ? { scrollSpeed: args.scrollSpeed }

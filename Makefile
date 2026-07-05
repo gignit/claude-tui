@@ -13,7 +13,9 @@ PREFIX     ?= $(HOME)/.local
 BIN_DIR    := $(PREFIX)/bin
 SHARE_DIR  := $(PREFIX)/share/claude-tui
 LAUNCHER   := $(BIN_DIR)/claude-tui
-PRELOAD    := $(SHARE_DIR)/node_modules/@opentui/solid/scripts/preload.ts
+# opentui ≥0.4 ships the compiled preload at scripts/preload.js (the
+# 0.1.x scripts/preload.ts no longer exists in the published package).
+PRELOAD    := $(SHARE_DIR)/node_modules/@opentui/solid/scripts/preload.js
 ENTRY      := $(SHARE_DIR)/src/index.tsx
 
 # Files that need to live in the install dir for the app to run.
@@ -75,16 +77,23 @@ install:
 	  '# `bun run` would interpret them as flags to itself and reject anything' \
 	  '# it does not recognise (e.g. --cwd, --debug).' \
 	  '#' \
-	  '# We do NOT cd into the install dir, so process.cwd() reflects wherever' \
-	  '# the user invoked claude-tui from — that becomes the agent'"'"'s working' \
-	  '# directory. We pass --cwd "$$PWD" first so it survives any --cwd the' \
-	  '# user adds (parser walks left-to-right; last value wins).' \
+	  '# We cd into the install dir before exec so Bun reads the INSTALLED' \
+	  '# bunfig.toml. Bun loads bunfig.toml from the current directory; if the' \
+	  '# user launches from a directory that has its own bunfig.toml with a' \
+	  '# preload Bun cannot resolve there (e.g. a claude-tui checkout without' \
+	  '# node_modules), startup dies with `preload not found` before our' \
+	  '# --preload flag is even considered. The agent'"'"'s working directory is' \
+	  '# NOT affected by the cd: we pass the invocation dir explicitly via' \
+	  '# --cwd "$$PWD" first, so it also survives any --cwd the user adds' \
+	  '# (parser walks left-to-right; last value wins).' \
 	  '' \
 	  'INSTALL_DIR="$(SHARE_DIR)"' \
-	  'PRELOAD="$$INSTALL_DIR/node_modules/@opentui/solid/scripts/preload.ts"' \
+	  'PRELOAD="$$INSTALL_DIR/node_modules/@opentui/solid/scripts/preload.js"' \
 	  'ENTRY="$$INSTALL_DIR/src/index.tsx"' \
 	  '' \
-	  'exec bun --conditions=browser --preload "$$PRELOAD" "$$ENTRY" --cwd "$$PWD" "$$@"' \
+	  'INVOKE_DIR="$$PWD"' \
+	  'cd "$$INSTALL_DIR" || exit 1' \
+	  'exec bun --conditions=browser --preload "$$PRELOAD" "$$ENTRY" --cwd "$$INVOKE_DIR" "$$@"' \
 	  > '$(LAUNCHER)'
 	@chmod +x '$(LAUNCHER)'
 	@printf '\n'

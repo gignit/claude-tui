@@ -78,12 +78,15 @@ function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
   // mid-conversation immediately rerenders existing bubbles in their
   // new style.
   const useMarkdown = () => settings.markdown() && (props.msg.complete || settings.markdownStreaming())
-  // Split the markdown source into structural segments (text, rule,
-  // blockquote). Each blockquote's inner content is recursively
-  // re-split by <MarkdownContent>, so nested `> >` quotes naturally
-  // produce nested left-bar boxes. See src/util/markdown-segments.ts
-  // for why we split at the source layer.
-  const segments = createMemo(() => splitMarkdown(props.msg.text))
+  const { syntaxStyle, treeSitterClient } = useThemeContext()
+  // Legacy path only: split the source into structural segments (text,
+  // rule, blockquote) and hand-render rules/quotes as boxes. opentui
+  // 0.4.x renders all of that natively inside <markdown>, so the default
+  // path feeds the whole message to one element. The memo only does
+  // work while /markdown-legacy is on.
+  const segments = createMemo(() =>
+    settings.markdownLegacy() ? splitMarkdown(props.msg.text) : [],
+  )
   // Built once per theme, but we need to thread it through the JSX so
   // SolidJS only rebuilds the markdown renderable when content/style
   // actually changes.
@@ -95,7 +98,15 @@ function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
     cellPadding: 1,
     wrapMode: "word" as const,
   }))
+  // Some models emit thinking blocks whose visible content is empty
+  // (summarized/redacted thinking — only a signature crosses the wire).
+  // Once complete, such a bubble has nothing to say; rendering it would
+  // leave a stray attribution line ("Default • model") floating in the
+  // scrollback. While still streaming we keep it so the "..." indicator
+  // shows the model is thinking.
+  const hasContent = () => !!(props.msg.text || props.msg.thinking)
   return (
+    <Show when={hasContent() || !props.msg.complete}>
     <box marginTop={1} flexShrink={0}>
       <Show when={props.msg.thinking}>
         <text fg={theme.thinking}>{prefix("thinking: ", props.msg.thinking ?? "")}</text>
@@ -105,11 +116,31 @@ function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
           when={useMarkdown()}
           fallback={<text fg={theme.text}>{props.msg.text}</text>}
         >
-          <MarkdownContent
-            segments={segments()}
-            streaming={!props.msg.complete}
-            tableOpts={tableOpts()}
-          />
+          <Show
+            when={!settings.markdownLegacy()}
+            fallback={
+              <LegacyMarkdownContent
+                segments={segments()}
+                streaming={!props.msg.complete}
+                tableOpts={tableOpts()}
+              />
+            }
+          >
+            {/* opentui ≥0.4 native path: one <markdown> element renders
+                blockquotes (left-bar), rules, lists, and tables itself —
+                no source-level splitting. Chrome colors come from the
+                syntaxStyle's "conceal"/"markup.quote" scopes (theme.tsx). */}
+            <markdown
+              content={props.msg.text}
+              syntaxStyle={syntaxStyle}
+              treeSitterClient={treeSitterClient}
+              fg={theme.text}
+              conceal={true}
+              concealCode={false}
+              streaming={!props.msg.complete}
+              tableOptions={tableOpts()}
+            />
+          </Show>
         </Show>
       </Show>
       <Show when={!props.msg.complete}>
@@ -124,18 +155,22 @@ function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
         })()}
       </Show>
     </box>
+    </Show>
   )
 }
 
 /**
- * Recursive renderer for the MarkdownSegment list:
+ * LEGACY markdown path (/markdown-legacy) — the pre-opentui-0.4
+ * renderer, kept for live comparison/revert. opentui ≤0.1 couldn't
+ * draw rules or blockquote bars itself, so we split the source into
+ * segments and hand-rendered them:
  *
  *   - text       → <markdown> element with our syntaxStyle + tree-sitter
  *   - rule       → 1-row <box border={["top"]}> that follows the
  *                  container width (resizes with the terminal)
  *   - blockquote → <box border={["left"]}> wrapping a recursive
- *                  <MarkdownContent> on the stripped inner text. The
- *                  recursion is what makes nested `> >` quotes show
+ *                  <LegacyMarkdownContent> on the stripped inner text.
+ *                  The recursion is what makes nested `> >` quotes show
  *                  as nested left-bar boxes — each strip layer wraps
  *                  the inner content in another bordered box.
  *
@@ -143,8 +178,11 @@ function AssistantBubble(props: { msg: AssistantDisplayMessage }) {
  * Streaming is technically only relevant to the trailing block, but
  * keeping it on for completed inner segments is harmless — opentui
  * just leaves the trailing parse stable, which is what we want anyway.
+ *
+ * Delete this (plus src/util/markdown-segments.ts and the
+ * markdownLegacy setting) once the native path has proven itself.
  */
-function MarkdownContent(props: {
+function LegacyMarkdownContent(props: {
   segments: MarkdownSegment[]
   streaming: boolean
   tableOpts: Record<string, unknown>
@@ -197,7 +235,7 @@ function MarkdownContent(props: {
               paddingLeft={1}
               paddingRight={1}
             >
-              <MarkdownContent
+              <LegacyMarkdownContent
                 segments={innerSegments()}
                 streaming={props.streaming}
                 tableOpts={props.tableOpts}

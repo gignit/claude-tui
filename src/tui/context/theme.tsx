@@ -234,10 +234,15 @@ function buildSyntaxStyle(theme: Theme): SyntaxStyle {
     // Default body text — applies to anything without a more specific
     // scope (paragraph prose, list item content, etc).
     { scope: ["default"], style: { foreground: theme.text } },
-    // Markdown source markers (`**`, `_`, leading `#`, fence backticks)
-    // when conceal is on. background+dim makes them invisible without
-    // changing the cell width.
-    { scope: ["conceal"], style: { foreground: theme.background, dim: true } },
+    // The "conceal" scope changed roles in opentui 0.4.x. Inline
+    // markers (`**`, backticks, `#`) are no longer painted-to-hide —
+    // the marked-token renderer simply omits them when conceal is on,
+    // and fenced-code markers are removed via conceal line source maps.
+    // Instead this scope's fg is the STRUCTURAL CHROME color:
+    // MarkdownRenderable uses getStyle("conceal").fg for blockquote
+    // left-bars and horizontal-rule borders. The old bg-colored fg
+    // (which hid markers in 0.1.x) would render that chrome invisible.
+    { scope: ["conceal"], style: { foreground: md.rule } },
 
     // ─── Markdown structure ───────────────────────────────────────────
     // Generic + per-level. tree-sitter sometimes emits the leveled

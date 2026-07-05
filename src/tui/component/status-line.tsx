@@ -24,6 +24,8 @@ export function StatusLine() {
         return "responding..."
       case "tool_running":
         return `running ${s.toolName}...`
+      case "compacting":
+        return "compacting context..."
       case "error":
         return `error: ${s.message}`
     }
@@ -36,7 +38,14 @@ export function StatusLine() {
     return theme.accent
   }
 
-  const modelStr = () => agent.model() ?? "connecting..."
+  // Model plus its reasoning-effort variant — "claude-fable-5 (xhigh)".
+  // No suffix when the user hasn't overridden effort: showing "(default)"
+  // on every session is noise; the absence of a variant IS the default.
+  const modelStr = () => {
+    const m = agent.model() ?? "connecting..."
+    const e = agent.effort()
+    return e ? `${m} (${e})` : m
+  }
   const modeStr = () => modeLabel(agent.mode())
   // Plan mode is a meaningful behavior change — color it distinctly so
   // the user can't miss when they're in it.

@@ -35,6 +35,14 @@ export interface SettingsContextValue {
    */
   markdownStreaming: () => boolean
   setMarkdownStreaming: (on: boolean) => void
+  /**
+   * Use the pre-opentui-0.4 markdown renderer (source-level segment
+   * splitting with hand-rolled rule/blockquote boxes) instead of the
+   * native <markdown> path. Escape hatch while the native renderer
+   * proves itself; remove together with LegacyMarkdownContent.
+   */
+  markdownLegacy: () => boolean
+  setMarkdownLegacy: (on: boolean) => void
 }
 
 const Ctx = createContext<SettingsContextValue | null>(null)
@@ -58,6 +66,9 @@ export function SettingsProvider(props: SettingsProviderProps) {
   const [markdownStreaming, setMarkdownStreamingSignal] = createSignal<boolean>(
     persisted.markdownStreaming ?? true,
   )
+  const [markdownLegacy, setMarkdownLegacySignal] = createSignal<boolean>(
+    persisted.markdownLegacy ?? false,
+  )
 
   const value: SettingsContextValue = {
     scrollSpeed,
@@ -78,6 +89,12 @@ export function SettingsProvider(props: SettingsProviderProps) {
       setMarkdownStreamingSignal(on)
       saveState({ markdownStreaming: on })
       dlog("settings.markdownStreaming", { value: on })
+    },
+    markdownLegacy,
+    setMarkdownLegacy: (on) => {
+      setMarkdownLegacySignal(on)
+      saveState({ markdownLegacy: on })
+      dlog("settings.markdownLegacy", { value: on })
     },
   }
 

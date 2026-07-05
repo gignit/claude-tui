@@ -20,6 +20,8 @@ import type {
   AgentEvent,
   AskUserQuestionItem,
   DisplayItem,
+  EffortLevel,
+  ModelChoice,
   PermissionRequest,
   QuestionRequest,
 } from "./types.ts"
@@ -31,12 +33,30 @@ export interface AgentClientConfig {
   cwd?: string
   model?: string
   /**
+   * Reasoning-effort variant for the session (low/medium/high/xhigh/max).
+   * Undefined → the model's default; we send no override. Changed at
+   * runtime via setEffort().
+   */
+  effort?: EffortLevel
+  /**
    * Resume a prior session by UUID. The SDK will replay the session's
    * prior turns through the same NDJSON event stream as `assistant` /
    * `user` messages — our translator handles them indistinguishably from
    * live events, so the TUI's scrollback fills with the full history.
    */
   resume?: string
+  /**
+   * With `resume`: branch into a NEW session id instead of continuing
+   * the original (the SDK's forkSession). The source session stays
+   * untouched on disk.
+   */
+  fork?: boolean
+  /**
+   * With `resume`: only load messages up to and including this message
+   * UUID (the SDK's resumeSessionAt — expects an assistant-message
+   * uuid). This is the conversation-rewind primitive.
+   */
+  resumeAt?: string
   /**
    * If you want to pre-approve tools and skip the permission UI entirely,
    * pass `permissionMode: "acceptEdits"` or `"bypassPermissions"`. Default
@@ -152,10 +172,18 @@ export interface AgentClient {
   close(): void
   /** Switch the model for subsequent assistant turns. Streaming-input only. */
   setModel(model?: string): Promise<void>
+  /** Switch the reasoning-effort variant. Null → back to the model default. */
+  setEffort(effort: EffortLevel | null): Promise<void>
   /** Switch the agent mode (Default ↔ Plan) for subsequent turns. */
   setMode(mode: AgentMode): Promise<void>
   /** Fetch the SDK's current view of available models. */
-  listModels(): Promise<Array<{ id: string; displayName: string; description: string }>>
+  listModels(): Promise<ModelChoice[]>
+  /**
+   * Restore checkpointed files to their state at the given USER message
+   * uuid (requires enableFileCheckpointing, which we always set).
+   * Returns a human-readable outcome; never throws.
+   */
+  rewindFiles(userMessageUuid: string): Promise<{ ok: boolean; summary: string }>
   /** Resolves once the underlying query iterator finishes (e.g. on close). */
   done: Promise<void>
 }
@@ -173,8 +201,14 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
   const sdkOptions: Options = {
     cwd: config.cwd ?? process.cwd(),
     ...(config.model ? { model: config.model } : {}),
+    ...(config.effort ? { effort: config.effort } : {}),
     ...(claudeBin ? { pathToClaudeCodeExecutable: claudeBin } : {}),
     ...(config.resume ? { resume: config.resume } : {}),
+    ...(config.fork ? { forkSession: true } : {}),
+    ...(config.resumeAt ? { resumeSessionAt: config.resumeAt } : {}),
+    // Snapshot files before each modification so /rewind can restore
+    // the working tree to any prior user turn via Query.rewindFiles().
+    enableFileCheckpointing: true,
     // Only ask the subprocess for verbose stderr diagnostics when the
     // user opted into debug mode. Otherwise leave the env alone so we
     // don't generate noise we then have to filter out of the TUI.
@@ -185,6 +219,14 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
         : {}),
     },
     permissionMode: config.permissionMode ?? "default",
+    // Without these two options the SDK runs in "isolation mode": a
+    // minimal system prompt and NO filesystem settings — no CLAUDE.md,
+    // no ~/.claude/settings.json, no project .claude/ config. claude-tui
+    // is meant to be the *Claude Code* experience with a better TUI, so
+    // opt back into the CLI's system prompt and the same settings the
+    // interactive CLI would load. ('project' is what enables CLAUDE.md.)
+    systemPrompt: { type: "preset", preset: "claude_code" },
+    settingSources: ["user", "project", "local"],
     // Ask the SDK for SDKPartialAssistantMessage events so assistant
     // text streams in token-by-token. Without this the only signal we
     // get for assistant text is the end-of-turn `assistant` message,
@@ -290,13 +332,15 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
   //   - A single message can contain multiple text blocks separated
   //     by tool_use blocks. Each text block is a SEPARATE bubble in
   //     the scrollback so the visual order stays text → tool → text.
-  //   - The end-of-turn `assistant` event re-emits all blocks; we
-  //     skip blocks we already streamed (matched by index) so the
-  //     bubbles aren't duplicated.
+  //   - The canonical `assistant` event(s) re-emit all blocks; we
+  //     finalize blocks we already streamed (matched by kind, in
+  //     stream order — NOT by array position, see the assistant case)
+  //     so the bubbles aren't duplicated. `finalized` marks a block
+  //     as already claimed by a canonical event.
   // Reset on every `message_start`.
   type StreamBlock =
-    | { kind: "text"; displayId: string; content: string }
-    | { kind: "thinking"; displayId: string; content: string }
+    | { kind: "text"; displayId: string; content: string; finalized?: boolean }
+    | { kind: "thinking"; displayId: string; content: string; finalized?: boolean }
     | { kind: "tool_use"; displayId: string; toolUseId: string }
   let currentMessageBlocks: Map<number, StreamBlock> = new Map()
   // Captured from the most recent `message_start` event so each chunk
@@ -342,21 +386,41 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
   function translateSdkMessage(msg: SDKMessage) {
     switch (msg.type) {
       case "assistant": {
-        // End-of-turn message containing the canonical content. By the
-        // time this arrives, `stream_event` should already have created
-        // a display item for each content block via
-        // `currentMessageBlocks` — so this handler mostly *finalizes*
-        // (updates with the authoritative text/input). It also acts as
-        // the fallback path when streaming was never received (older
-        // SDK or includePartialMessages off).
+        // Canonical assistant content. Modern `claude` builds emit ONE
+        // `assistant` SDK message PER content block — each carrying a
+        // single-element content array, all sharing the same API message
+        // id. That means array position is meaningless for matching: in
+        // a thinking→text turn both blocks arrive at position 0 of their
+        // own message, while the streamed blocks sit at stream indices
+        // 0 and 1. Matching by position appended a duplicate text bubble
+        // (the "double output" bug). Instead we match:
+        //   - tool_use blocks by their globally unique tool-use id,
+        //   - text/thinking blocks by claiming the first streamed block
+        //     of the same kind (in stream order) not yet finalized.
+        // This also still works when a single message carries the full
+        // block array (older CLI), and acts as the fallback path when
+        // streaming was never received (includePartialMessages off):
+        // nothing matches, so blocks are appended fresh — marked
+        // `finalized` so a later per-block message can't claim them.
         const beta = msg.message
         const turnModel = typeof beta.model === "string" ? beta.model : undefined
         const turnMode = currentMode
-        for (let i = 0; i < beta.content.length; i++) {
-          const block = beta.content[i]!
-          const streamed = currentMessageBlocks.get(i)
+        const claimStreamed = (kind: "text" | "thinking") => {
+          for (const idx of [...currentMessageBlocks.keys()].sort((a, b) => a - b)) {
+            const st = currentMessageBlocks.get(idx)!
+            if (st.kind === kind && !st.finalized) {
+              st.finalized = true
+              return st
+            }
+          }
+          return undefined
+        }
+        const nextBlockKey = () =>
+          currentMessageBlocks.size === 0 ? 0 : Math.max(...currentMessageBlocks.keys()) + 1
+        for (const block of beta.content) {
           if (block.type === "text") {
-            if (streamed?.kind === "text") {
+            const streamed = claimStreamed("text")
+            if (streamed) {
               emit({
                 type: "updated",
                 id: streamed.displayId,
@@ -380,10 +444,16 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
                   createdAt: Date.now(),
                 },
               })
-              currentMessageBlocks.set(i, { kind: "text", displayId: id, content: block.text })
+              currentMessageBlocks.set(nextBlockKey(), {
+                kind: "text",
+                displayId: id,
+                content: block.text,
+                finalized: true,
+              })
             }
           } else if (block.type === "thinking") {
-            if (streamed?.kind === "thinking") {
+            const streamed = claimStreamed("thinking")
+            if (streamed) {
               emit({
                 type: "updated",
                 id: streamed.displayId,
@@ -408,7 +478,12 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
                   createdAt: Date.now(),
                 },
               })
-              currentMessageBlocks.set(i, { kind: "thinking", displayId: id, content: block.thinking })
+              currentMessageBlocks.set(nextBlockKey(), {
+                kind: "thinking",
+                displayId: id,
+                content: block.thinking,
+                finalized: true,
+              })
             }
           } else if (block.type === "tool_use") {
             // Detect Claude's built-in mode-switch tools and update
@@ -425,12 +500,13 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
               dlog("agent.mode.auto", { mode: currentMode, source: "plan_exit" })
             }
             const parsedInput = (block.input ?? {}) as Record<string, unknown>
-            if (streamed?.kind === "tool_use") {
+            const streamedToolId = toolCallByUseId.get(block.id)
+            if (streamedToolId) {
               // Tool item was appended during streaming with empty
               // input. Now we have the parsed JSON input — update.
               emit({
                 type: "updated",
-                id: streamed.displayId,
+                id: streamedToolId,
                 patch: { input: parsedInput } as Partial<DisplayItem>,
               })
             } else {
@@ -448,7 +524,6 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
                   createdAt: Date.now(),
                 },
               })
-              currentMessageBlocks.set(i, { kind: "tool_use", displayId: id, toolUseId: block.id })
             }
             emit({ type: "status", status: { kind: "tool_running", toolName: block.name } })
           }
@@ -539,6 +614,72 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
           // Initial context-usage fetch — gives the status bar a number
           // to show before the first user turn.
           void refreshContextUsage()
+          break
+        }
+        // Compaction finished (manual /compact or auto at the window
+        // edge). Surface the token delta and refresh the status bar.
+        if ("subtype" in msg && msg.subtype === "compact_boundary") {
+          const meta = (msg as { compact_metadata?: { trigger?: string; pre_tokens?: number; post_tokens?: number } })
+            .compact_metadata
+          const pre = meta?.pre_tokens
+          const post = meta?.post_tokens
+          const delta =
+            typeof pre === "number"
+              ? `: ${Math.round(pre / 1000)}k → ${typeof post === "number" ? Math.round(post / 1000) + "k" : "?"} tokens`
+              : ""
+          emit({
+            type: "appended",
+            item: {
+              kind: "system",
+              id: nextDisplayId("sys"),
+              text: `context compacted (${meta?.trigger ?? "manual"})${delta}`,
+              tone: "info",
+              createdAt: Date.now(),
+            },
+          })
+          void refreshContextUsage()
+          break
+        }
+        // Long-running phase updates ('compacting', 'requesting', null).
+        // Compaction can take a while — without this the UI sits on
+        // "ready" while the subprocess is busy rewriting the context.
+        if ("subtype" in msg && msg.subtype === "status") {
+          const s = msg as { status?: string | null; compact_result?: string; compact_error?: string }
+          if (s.compact_result === "failed") {
+            emit({
+              type: "appended",
+              item: {
+                kind: "error",
+                id: nextDisplayId("err"),
+                text: `compaction failed: ${s.compact_error ?? "unknown error"}`,
+                createdAt: Date.now(),
+              },
+            })
+          }
+          if (s.status === "compacting") emit({ type: "status", status: { kind: "compacting" } })
+          else if (s.status === "requesting") emit({ type: "status", status: { kind: "thinking" } })
+          else if (s.status === null) emit({ type: "status", status: { kind: "idle" } })
+          break
+        }
+        // Output of the CLI's local slash commands (/context, /usage,
+        // /cost, …) forwarded as prompt text. Without this branch the
+        // command appears to do nothing — the CLI runs it but the
+        // response type was silently dropped.
+        if ("subtype" in msg && msg.subtype === "local_command_output") {
+          const content = (msg as { content?: string }).content
+          if (content && content.trim().length > 0) {
+            emit({
+              type: "appended",
+              item: {
+                kind: "system",
+                id: nextDisplayId("sys"),
+                text: stripAnsi(content),
+                tone: "info",
+                createdAt: Date.now(),
+              },
+            })
+          }
+          break
         }
         break
       }
@@ -773,6 +914,28 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
         })
       }
     },
+    async setEffort(effort: EffortLevel | null) {
+      try {
+        // Runtime effort changes go through the settings channel — there
+        // is no dedicated control request. `effortLevel: null` clears the
+        // override (SDK ≥0.3 accepts null per top-level key to unset).
+        // The Settings type's effortLevel union omits "max" even though
+        // Options.effort and supportedEffortLevels include it, so cast.
+        await q.applyFlagSettings({ effortLevel: effort } as unknown as Parameters<Query["applyFlagSettings"]>[0])
+        emit({ type: "effort", effort })
+        dlog("agent.effort.user", { effort })
+      } catch (err) {
+        emit({
+          type: "appended",
+          item: {
+            kind: "error",
+            id: nextDisplayId("err"),
+            text: `setEffort failed: ${err instanceof Error ? err.message : String(err)}`,
+            createdAt: Date.now(),
+          },
+        })
+      }
+    },
     async setMode(mode: AgentMode) {
       try {
         await q.setPermissionMode(modeToSdk(mode))
@@ -794,7 +957,15 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
     async listModels() {
       try {
         const models = await q.supportedModels()
-        return models.map((m) => ({ id: m.value, displayName: m.displayName, description: m.description }))
+        return models.map((m) => ({
+          id: m.value,
+          displayName: m.displayName,
+          description: m.description,
+          ...(m.resolvedModel ? { resolvedModel: m.resolvedModel } : {}),
+          ...(m.supportedEffortLevels && m.supportedEffortLevels.length > 0
+            ? { supportedEffortLevels: m.supportedEffortLevels as EffortLevel[] }
+            : {}),
+        }))
       } catch (err) {
         emit({
           type: "appended",
@@ -806,6 +977,23 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
           },
         })
         return []
+      }
+    },
+    async rewindFiles(userMessageUuid: string) {
+      try {
+        const result = await q.rewindFiles(userMessageUuid)
+        if (!result.canRewind) {
+          return { ok: false, summary: result.error ?? "cannot rewind files to that point" }
+        }
+        const files = result.filesChanged?.length ?? 0
+        const summary =
+          files === 0
+            ? "no file changes to undo"
+            : `restored ${files} file${files === 1 ? "" : "s"} (+${result.insertions ?? 0}/-${result.deletions ?? 0})`
+        dlog("agent.rewindFiles", { userMessageUuid, files })
+        return { ok: true, summary }
+      } catch (err) {
+        return { ok: false, summary: err instanceof Error ? err.message : String(err) }
       }
     },
     close() {

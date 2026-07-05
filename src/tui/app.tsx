@@ -21,6 +21,8 @@ export interface RunOptions {
   cwd: string
   /** Optional. When undefined, the SDK uses whatever `claude` would default to. */
   model?: string
+  /** Optional reasoning-effort variant. Undefined → model default. */
+  effort?: import("../agent/types.ts").EffortLevel
   pathToClaudeCodeExecutable?: string
   /** Optional override for mouse-wheel scroll speed (lines per tick). */
   scrollSpeed?: number
@@ -38,6 +40,7 @@ export async function runTui(opts: RunOptions): Promise<void> {
                   config={{
                     cwd: opts.cwd,
                     ...(opts.model ? { model: opts.model } : {}),
+                    ...(opts.effort ? { effort: opts.effort } : {}),
                     ...(opts.pathToClaudeCodeExecutable
                       ? { pathToClaudeCodeExecutable: opts.pathToClaudeCodeExecutable }
                       : {}),

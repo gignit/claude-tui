@@ -19,6 +19,8 @@ import type {
   AgentStatus,
   ContextUsage,
   DisplayItem,
+  EffortLevel,
+  ModelChoice,
   PermissionRequest,
   QuestionRequest,
 } from "../../agent/types.ts"
@@ -39,6 +41,8 @@ export interface AgentContextValue {
   pendingQuestion: () => QuestionRequest | null
   /** Active model id reported by the SDK, or null until the init event arrives. */
   model: () => string | null
+  /** Active reasoning-effort variant, or null → model default. */
+  effort: () => EffortLevel | null
   /** Active agent mode (Default ↔ Plan). Defaults to "default" until init. */
   mode: () => AgentMode
   /** Session UUID reported by the SDK init event, or null pre-init. */
@@ -50,12 +54,28 @@ export interface AgentContextValue {
   submit: (text: string) => void
   interrupt: () => Promise<void>
   setModel: (model: string) => Promise<void>
+  /** Set the reasoning-effort variant; null → back to model default. Persists. */
+  setEffort: (effort: EffortLevel | null) => Promise<void>
   setMode: (mode: AgentMode) => Promise<void>
   /** Cycle Default → Plan → Default. Wired to Tab. */
   cycleMode: () => Promise<void>
   /** Resume a different session by uuid. Wipes the current scrollback and replays. */
   resumeSession: (id: string) => Promise<void>
-  listModels: () => Promise<Array<{ id: string; displayName: string; description: string }>>
+  /**
+   * Branch the current session into a new session id (SDK forkSession).
+   * Scrollback is preserved; subsequent turns land in the new session
+   * while the original stays untouched on disk.
+   */
+  forkSession: () => Promise<void>
+  /**
+   * Rewind the current session to just before a user turn (see
+   * RewindPoint). Restores checkpointed files to that turn first
+   * (best-effort), then restarts the conversation truncated at the
+   * anchor. anchorUuid null = rewind to before the first turn (fresh
+   * session).
+   */
+  rewindSession: (point: import("../../util/sessions.ts").RewindPoint) => Promise<void>
+  listModels: () => Promise<ModelChoice[]>
   /** Append a local-only notice to the scrollback (does not hit the SDK). */
   pushNotice: (text: string, tone?: "info" | "debug") => void
 }
@@ -73,6 +93,10 @@ export function AgentProvider(props: AgentProviderProps) {
   const [pendingPermission, setPendingPermission] = createSignal<PermissionRequest | null>(null)
   const [pendingQuestion, setPendingQuestion] = createSignal<QuestionRequest | null>(null)
   const [model, setModelSignal] = createSignal<string | null>(null)
+  // Initial value comes from persisted state (threaded through config).
+  // The SDK doesn't report effort back, so this signal is our source of
+  // truth: what we sent at spawn, updated on every setEffort().
+  const [effort, setEffortSignal] = createSignal<EffortLevel | null>(props.config.effort ?? null)
   const [mode, setModeSignal] = createSignal<AgentMode>("default")
   const [sessionId, setSessionIdSignal] = createSignal<string | null>(null)
   const [contextUsage, setContextUsageSignal] = createSignal<ContextUsage | null>(null)
@@ -145,6 +169,9 @@ export function AgentProvider(props: AgentProviderProps) {
           case "model":
             setModelSignal(evt.model)
             break
+          case "effort":
+            setEffortSignal(evt.effort)
+            break
           case "mode":
             setModeSignal(evt.mode)
             break
@@ -176,6 +203,7 @@ export function AgentProvider(props: AgentProviderProps) {
     pendingPermission,
     pendingQuestion,
     model,
+    effort,
     mode,
     sessionId,
     contextUsage,
@@ -187,6 +215,12 @@ export function AgentProvider(props: AgentProviderProps) {
     setModel: async (next) => {
       await client?.setModel(next)
       saveState({ model: next })
+    },
+    setEffort: async (next) => {
+      await client?.setEffort(next)
+      // `undefined` in the patch overwrites the key, and JSON.stringify
+      // then drops it — so clearing to model-default removes the entry.
+      saveState({ effort: next ?? undefined })
     },
     setMode: async (next) => {
       await client?.setMode(next)
@@ -219,6 +253,69 @@ export function AgentProvider(props: AgentProviderProps) {
           for (const item of history) arr.push(item)
         }))
       }
+    },
+    forkSession: async () => {
+      const id = sessionId()
+      if (!id) return
+      dlog("agent.forkSession", { from: id })
+      // Same shape as resumeSession, but with fork:true the SDK assigns
+      // a fresh session id — the init event updates the signal.
+      let history: DisplayItem[] = []
+      try {
+        history = await readSessionHistory(props.config.cwd ?? process.cwd(), id)
+      } catch {
+        /* fork still works without visual history */
+      }
+      startClient({ resume: id, fork: true })
+      if (history.length > 0) {
+        setItems(produce((arr) => {
+          for (const item of history) arr.push(item)
+        }))
+      }
+    },
+    rewindSession: async (point) => {
+      const id = sessionId()
+      if (!id) return
+      dlog("agent.rewindSession", { id, anchor: point.anchorUuid, user: point.userUuid })
+      // 1. File restore MUST run on the live client — checkpoints belong
+      //    to the running subprocess. Best-effort: a session started
+      //    before checkpointing was enabled simply reports it can't.
+      const files = await client?.rewindFiles(point.userUuid)
+      value.pushNotice(`/rewind: files — ${files?.summary ?? "no client"}`)
+      // 2. Restart the conversation truncated at the anchor. For the
+      //    first user turn there is nothing before it — start fresh.
+      if (point.anchorUuid === null) {
+        startClient({})
+        value.pushNotice("/rewind: conversation reset to the beginning (new session)")
+        return
+      }
+      let history: DisplayItem[] = []
+      try {
+        history = await readSessionHistory(props.config.cwd ?? process.cwd(), id)
+      } catch {
+        /* scrollback prefill is cosmetic; the resume itself is what matters */
+      }
+      // Truncate the visual history at the picked user turn: drop the
+      // (ordinal+1)-th user bubble and everything after it.
+      let seen = 0
+      let cut = history.length
+      for (let i = 0; i < history.length; i++) {
+        if (history[i]!.kind === "user") {
+          if (seen === point.ordinal) {
+            cut = i
+            break
+          }
+          seen++
+        }
+      }
+      startClient({ resume: id, resumeAt: point.anchorUuid })
+      const truncated = history.slice(0, cut)
+      if (truncated.length > 0) {
+        setItems(produce((arr) => {
+          for (const item of truncated) arr.push(item)
+        }))
+      }
+      value.pushNotice(`/rewind: conversation rewound to before turn ${point.ordinal + 1}`)
     },
     listModels: async () => (client ? client.listModels() : []),
     pushNotice: (text: string, tone: "info" | "debug" = "info") => {

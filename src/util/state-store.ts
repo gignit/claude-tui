@@ -14,6 +14,11 @@ import { homedir } from "node:os"
 export interface PersistedState {
   /** Last selected model id. Undefined → use whatever `claude` defaults to. */
   model?: string
+  /**
+   * Last selected reasoning-effort variant (low/medium/high/xhigh/max),
+   * set via /variant. Undefined → model default (no override sent).
+   */
+  effort?: string
   /** Mouse-wheel scroll speed in lines per tick (1..20). Default 3. */
   scrollSpeed?: number
   /**
@@ -33,7 +38,21 @@ export interface PersistedState {
    * incremental parser produces visual flicker on your terminal.
    */
   markdownStreaming?: boolean
+  /**
+   * Use the legacy (pre-opentui-0.4) markdown renderer with hand-rolled
+   * rule/blockquote segmentation. Default false = native renderer.
+   */
+  markdownLegacy?: boolean
+  /**
+   * Recent prompt submissions, oldest first, for Up-arrow recall.
+   * Capped at PROMPT_HISTORY_MAX entries on write.
+   */
+  promptHistory?: string[]
 }
+
+/** Cap for promptHistory — enough for real recall, small enough to keep
+ * state.json snappy to parse on every save. */
+export const PROMPT_HISTORY_MAX = 50
 
 export function statePath(): string {
   const xdg = process.env["XDG_CONFIG_HOME"]

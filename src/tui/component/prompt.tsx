@@ -10,9 +10,11 @@
  *   - Ctrl+D        always exit cleanly
  *   - Tab           if autocomplete is open, complete to the suggestion's
  *                   text; otherwise cycle agent mode (Default ↔ Plan)
- *   - Up/Down       move autocomplete selection (only when open)
- *   - Esc           dismiss autocomplete (handled implicitly by clearing
- *                   the leading "/")
+ *   - Up/Down       move autocomplete selection when open; otherwise
+ *                   recall prompt history (only while the buffer is
+ *                   empty or unmodified from the recalled entry)
+ *   - Esc           interrupt the in-flight response (base view only —
+ *                   dialogs see Esc first and close themselves)
  *
  * Slash resolution: typing `/foo` and hitting Enter (without the
  * autocomplete open) tries the command registry first; on match, runs
@@ -29,6 +31,7 @@ import { useCommand } from "../context/command.tsx"
 import { useDialog } from "../context/dialog.tsx"
 import { dlog } from "../../util/debug-log.ts"
 import { exitTui } from "../../util/exit.ts"
+import { PROMPT_HISTORY_MAX, loadState, saveState } from "../../util/state-store.ts"
 import { PromptAutocomplete, autocompleteSuggestions } from "./prompt-autocomplete.tsx"
 
 const TEXTAREA_KEY_BINDINGS: TextareaKeyBinding[] = [
@@ -46,6 +49,47 @@ export function Prompt(props: { disabled?: boolean }) {
   const [value, setValue] = createSignal("")
   const [acIndex, setAcIndex] = createSignal(0)
   let textarea: TextareaRenderable | undefined
+
+  // ── Prompt history (Up/Down recall) ──────────────────────────────
+  // Loaded once at mount, appended on every submit, persisted. Recall
+  // only engages when the buffer is empty or still exactly equals the
+  // history entry being browsed — the moment the user edits anything,
+  // Up/Down revert to normal cursor movement. `histIndex === null`
+  // means "not browsing". `draft` preserves whatever was typed before
+  // browsing started so Down past the newest entry restores it.
+  let history: string[] = loadState().promptHistory ?? []
+  let histIndex: number | null = null
+  let draft = ""
+
+  const setPromptText = (text: string) => {
+    textarea?.setText(text)
+    setValue(text)
+  }
+
+  const historyRecall = (delta: -1 | 1): boolean => {
+    if (history.length === 0) return false
+    const browsing = histIndex !== null && value() === history[histIndex]
+    if (!browsing && !(value() === "" && delta === -1)) return false
+    if (histIndex === null) draft = value()
+    let next = histIndex === null ? history.length + delta : histIndex + delta
+    if (next < 0) next = 0
+    if (next >= history.length) {
+      // Walked past the newest entry — restore the pre-browse draft.
+      histIndex = null
+      setPromptText(draft)
+      return true
+    }
+    histIndex = next
+    setPromptText(history[next]!)
+    dlog("prompt.history.recall", { index: next })
+    return true
+  }
+
+  const pushHistory = (text: string) => {
+    if (history.length > 0 && history[history.length - 1] === text) return
+    history = [...history, text].slice(-PROMPT_HISTORY_MAX)
+    saveState({ promptHistory: history })
+  }
 
   // When the dialog overlay just emptied, refocus the textarea so the
   // user can keep typing without clicking. We defer to the next tick so
@@ -151,6 +195,26 @@ export function Prompt(props: { disabled?: boolean }) {
       e.preventDefault()
       return
     }
+    // History recall — only when the buffer is empty or untouched
+    // since the last recall (see historyRecall). Otherwise Up/Down
+    // fall through to normal textarea cursor movement.
+    if ((e.name === "up" || e.name === "down") && !e.shift && !e.ctrl && !e.meta) {
+      if (historyRecall(e.name === "up" ? -1 : 1)) {
+        e.preventDefault()
+        return
+      }
+    }
+    // Esc: stop the in-flight response. Dialogs grab focus before the
+    // prompt sees keys, so this only fires at the base chat view.
+    if (e.name === "escape") {
+      const s = agent.status()
+      if (s.kind === "thinking" || s.kind === "streaming" || s.kind === "tool_running" || s.kind === "compacting") {
+        dlog("prompt.esc.interrupt")
+        void agent.interrupt()
+        e.preventDefault()
+        return
+      }
+    }
   }
 
   /**
@@ -172,6 +236,9 @@ export function Prompt(props: { disabled?: boolean }) {
     const trimmed = value().trim()
     dlog("prompt.submit", { length: trimmed.length, preview: trimmed.slice(0, 80) })
     if (!trimmed) return
+    pushHistory(trimmed)
+    histIndex = null
+    draft = ""
 
     if (trimmed.startsWith("/") && handleSlashCommand(trimmed)) {
       reset()

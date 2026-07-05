@@ -1,4 +1,13 @@
 /**
+ * LEGACY — only used by the /markdown-legacy render path.
+ *
+ * opentui ≥0.4 renders horizontal rules and blockquotes natively inside
+ * <markdown> (see MarkdownRenderable.createHorizontalRuleRenderable /
+ * createBlockquoteRenderable), so the default path no longer splits the
+ * source. This module + LegacyMarkdownContent in message.tsx exist so we
+ * can flip back live if the native renderer misbehaves; delete both
+ * (and the markdownLegacy setting) once it has proven itself.
+ *
  * Split markdown source into segments the renderer can lay out
  * structurally — text, horizontal rules, and blockquotes.
  *
@@ -79,9 +88,39 @@ export function splitMarkdown(text: string): MarkdownSegment[] {
     }
     buf = []
   }
+  // Fenced-code tracking. A `---` or `> ...` line INSIDE a ``` / ~~~
+  // fence is literal code content, not structure — splitting on it
+  // tears the fence apart: the closing marker lands in a later segment,
+  // the first segment's fence never terminates, and the whole message
+  // renders as a mix of raw source and stray rules/blockquote boxes.
+  // (Found via a message that quoted a markdown sample — containing a
+  // table, `---`, and a `> Note` — inside a ```markdown fence.)
+  let fence: { ch: string; len: number } | null = null
+  const fenceDelta = (line: string): boolean => {
+    // Opening fence: ≤3 spaces of indent, then 3+ backticks or tildes
+    // (optionally followed by an info string). Closing fence: same char,
+    // at least as many, and nothing else on the line.
+    const m = line.match(/^ {0,3}(`{3,}|~{3,})/)
+    if (!m) return false
+    const marker = m[1]!
+    if (!fence) {
+      fence = { ch: marker[0]!, len: marker.length }
+      return true
+    }
+    if (marker[0] === fence.ch && marker.length >= fence.len && /^ {0,3}(`+|~+)\s*$/.test(line)) {
+      fence = null
+      return true
+    }
+    return false // fence line with info text while already fenced → content
+  }
   let i = 0
   while (i < lines.length) {
     const line = lines[i]!
+    if (fenceDelta(line) || fence) {
+      buf.push(line)
+      i++
+      continue
+    }
     if (isHorizontalRule(line, i, lines)) {
       flushText()
       segments.push({ kind: "rule" })

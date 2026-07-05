@@ -13,9 +13,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.114",
-    "@opentui/core": "^0.1.100",
-    "@opentui/solid": "^0.1.100",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.201",
+    "@opentui/core": "^0.4.3",
+    "@opentui/solid": "^0.4.3",
     "solid-js": "^1.9.12"
   },
   "devDependencies": {

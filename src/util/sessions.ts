@@ -33,6 +33,27 @@ export interface SessionSummary {
   path: string
 }
 
+/**
+ * One rewindable point in a session — a user text turn. `/rewind` lets
+ * the user pick one; the conversation restarts from just before it.
+ */
+export interface RewindPoint {
+  /** UUID of the user message entry itself (rewindFiles target). */
+  userUuid: string
+  /**
+   * UUID of the last assistant message BEFORE this user turn — what the
+   * SDK's resumeSessionAt expects. Null for the first user turn (rewind
+   * = start a fresh session).
+   */
+  anchorUuid: string | null
+  /** The user message text (preview). */
+  text: string
+  /** ISO timestamp of the user message, if present. */
+  at?: string
+  /** How many user text turns precede this one (0-based ordinal). */
+  ordinal: number
+}
+
 /** Mirror Claude Code's project-dir naming convention. */
 export function projectDirName(cwd: string): string {
   return cwd.replace(/[/.]/g, "-")
@@ -111,6 +132,50 @@ export async function listSessions(cwd: string, limit = 50): Promise<SessionSumm
  * field. Each assistant turn (one assistant entry in the JSONL) is one
  * bubble — we don't try to merge consecutive assistant entries.
  */
+/**
+ * List the rewindable user turns of a session, oldest first. Each user
+ * text message becomes a RewindPoint carrying:
+ *   - its own uuid   → passed to Query.rewindFiles() to restore files
+ *   - the uuid of the assistant message that preceded it → passed as
+ *     resumeSessionAt so the resumed conversation ends just BEFORE the
+ *     picked turn (the turn itself and everything after are dropped).
+ */
+export async function listRewindPoints(cwd: string, sessionId: string): Promise<RewindPoint[]> {
+  const path = join(projectDirPath(cwd), `${sessionId}.jsonl`)
+  let text: string
+  try {
+    text = await readFile(path, "utf8")
+  } catch {
+    return []
+  }
+  const points: RewindPoint[] = []
+  let lastAssistantUuid: string | null = null
+  for (const raw of text.split("\n")) {
+    if (!raw.trim()) continue
+    let entry: any
+    try {
+      entry = JSON.parse(raw)
+    } catch {
+      continue
+    }
+    if (entry?.type === "assistant") {
+      if (typeof entry.uuid === "string") lastAssistantUuid = entry.uuid
+      continue
+    }
+    if (entry?.type !== "user") continue
+    const userText = extractUserText(entry?.message?.content)
+    if (!userText || typeof entry.uuid !== "string") continue
+    points.push({
+      userUuid: entry.uuid,
+      anchorUuid: lastAssistantUuid,
+      text: stripAnsi(userText),
+      ...(typeof entry.timestamp === "string" ? { at: entry.timestamp } : {}),
+      ordinal: points.length,
+    })
+  }
+  return points
+}
+
 export async function readSessionHistory(cwd: string, sessionId: string): Promise<DisplayItem[]> {
   const path = join(projectDirPath(cwd), `${sessionId}.jsonl`)
   let text: string
