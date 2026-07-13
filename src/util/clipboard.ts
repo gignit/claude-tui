@@ -73,7 +73,7 @@ function findNativeHelper(): CopyHelper | null {
   return null
 }
 
-function commandExists(cmd: string): boolean {
+export function commandExists(cmd: string): boolean {
   // `command -v` is portable across bash/zsh/dash. Returns 0 if found.
   const result = Bun.spawnSync({
     cmd: ["sh", "-c", `command -v ${JSON.stringify(cmd)}`],

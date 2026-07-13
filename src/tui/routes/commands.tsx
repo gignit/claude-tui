@@ -153,6 +153,27 @@ function buildSpecs(deps: BuiltinDeps): CommandSpec[] {
       },
     },
     {
+      value: "session.rename",
+      title: "Rename session",
+      description: "Set a custom title for the current session (shown in the control panel and /sessions)",
+      category: "Session",
+      slash: { name: "rename", aliases: ["title"] },
+      onSelect: (args) => {
+        dialog.clear()
+        const title = (args ?? "").trim()
+        if (!title) {
+          agent.pushNotice("/rename: usage  /rename <new title>")
+          return
+        }
+        void agent
+          .renameCurrentSession(title)
+          .then(() => agent.pushNotice(`/rename: session titled '${title}'`))
+          .catch((err) =>
+            agent.pushNotice(`/rename: ${err instanceof Error ? err.message : String(err)}`),
+          )
+      },
+    },
+    {
       value: "session.rewind",
       title: "Rewind conversation",
       description: "Pick a past turn; restore files to it and drop everything after",
@@ -266,6 +287,19 @@ function buildSpecs(deps: BuiltinDeps): CommandSpec[] {
         agent.pushNotice(
           `/markdown-stream: ${next ? "on (live)" : "off (rendered after complete)"} (saved)`,
         )
+        dialog.clear()
+      },
+    },
+    {
+      value: "settings.control_panel",
+      title: "Toggle control panel",
+      description: "Right-hand panel with session info, context usage, MCP servers, and todos. Persists.",
+      category: "Settings",
+      slash: { name: "controlpanel", aliases: ["panel", "cp"] },
+      onSelect: (args) => {
+        const next = parseToggleArg(args, settings.controlPanel())
+        settings.setControlPanel(next)
+        agent.pushNotice(`/controlpanel: ${next ? "shown" : "hidden"} (saved)`)
         dialog.clear()
       },
     },

@@ -55,6 +55,11 @@ export interface PersistedState {
    * override it for one launch. Undefined → "default".
    */
   permissionMode?: string
+  /**
+   * Show the right-hand control panel (session info, context, MCP,
+   * todos, cwd:branch). Toggled via /controlpanel. Default false.
+   */
+  controlPanel?: boolean
 }
 
 /** Cap for promptHistory — enough for real recall, small enough to keep

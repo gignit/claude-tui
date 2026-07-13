@@ -18,6 +18,7 @@
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { runTui } from "./tui/app.tsx"
+import { runHeadlessDebug } from "./debug/headless.ts"
 import { EFFORT_LEVELS } from "./agent/types.ts"
 import { levelToSdk, parsePermissionLevel } from "./agent/modes.ts"
 import { loadState, statePath } from "./util/state-store.ts"
@@ -31,6 +32,12 @@ interface Argv {
   permissionMode?: string
   debug: boolean
   debugLog?: string
+  /** Comma-separated headless probes (e.g. "panel"). Implies --debug. */
+  debugOptions?: string
+  /** Resume a session by id (TUI and headless modes). */
+  resume?: string
+  /** Single-turn non-interactive prompt (headless, like `claude -p`). */
+  prompt?: string
   help: boolean
 }
 
@@ -61,6 +68,20 @@ function parseArgs(argv: readonly string[]): Argv {
     } else if (a === "--debug-log" && argv[i + 1]) {
       out.debugLog = argv[++i]!
       out.debug = true
+    } else if (a === "--debug-options" && argv[i + 1]) {
+      out.debugOptions = argv[++i]!
+      out.debug = true
+    } else if (a.startsWith("--debug-options=")) {
+      out.debugOptions = a.slice("--debug-options=".length)
+      out.debug = true
+    } else if (a === "--resume" && argv[i + 1]) {
+      out.resume = argv[++i]!
+    } else if (a.startsWith("--resume=")) {
+      out.resume = a.slice("--resume=".length)
+    } else if (a === "--prompt" || a === "-p") {
+      if (argv[i + 1]) out.prompt = argv[++i]!
+    } else if (a.startsWith("--prompt=")) {
+      out.prompt = a.slice("--prompt=".length)
     } else if (a === "--permission-mode" && argv[i + 1]) {
       out.permissionMode = argv[++i]!
     } else if (a.startsWith("--permission-mode=")) {
@@ -104,6 +125,14 @@ function printHelp(): void {
       `  --debug               Log every event to ${DEFAULT_DEBUG_LOG}`,
       "                        and surface SDK subprocess stderr in the TUI",
       "  --debug-log <path>    Use a custom debug log path (implies --debug)",
+      "  --resume <id>         Resume a session by id (TUI or headless)",
+      "  --prompt <text>, -p   Non-interactive single turn: submit the prompt, print",
+      "                        the response as plain text, exit. No TUI.",
+      "  --debug-options <p>   Run headless probes instead of the TUI and print",
+      "                        their data to stdout (implies --debug). Probes: panel",
+      "                        Combine with --resume/--prompt to inspect any session",
+      "                        state, e.g.:  claude-tui --debug --debug-options panel \\",
+      "                                        --resume <id> -p 'add a todo list'",
       "  -h, --help            Show this help",
       "",
       "Hotkeys:",
@@ -182,12 +211,34 @@ async function main() {
         `Valid: default, accept, bypass\n`,
     )
   }
+  // Headless mode (--prompt and/or --debug-options): exercise the real
+  // agent client and print plain text, without opentui taking the screen.
+  // The SDK subprocess can outlive close(), so exit explicitly with the
+  // probe's status rather than waiting for the event loop to drain.
+  if (args.debugOptions || args.prompt) {
+    const code = await runHeadlessDebug(
+      {
+        ...(args.debugOptions ? { probes: args.debugOptions } : {}),
+        ...(args.prompt ? { prompt: args.prompt } : {}),
+      },
+      {
+        cwd: args.cwd,
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
+        ...(permissionMode ? { permissionMode } : {}),
+        ...(args.bin ? { pathToClaudeCodeExecutable: args.bin } : {}),
+        ...(args.resume ? { resume: args.resume } : {}),
+      },
+    )
+    process.exit(code)
+  }
   await runTui({
     cwd: args.cwd,
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
     ...(permissionMode ? { permissionMode } : {}),
     ...(args.bin ? { pathToClaudeCodeExecutable: args.bin } : {}),
+    ...(args.resume ? { resume: args.resume } : {}),
     ...(args.scrollSpeed !== undefined && Number.isFinite(args.scrollSpeed)
       ? { scrollSpeed: args.scrollSpeed }
       : {}),

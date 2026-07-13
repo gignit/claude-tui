@@ -90,6 +90,32 @@ display. Always:
 4. `dlog` truncates strings >2 KB and recurses 4 levels deep — safe to
    log raw SDK messages.
 
+## Testing without the TUI (headless — the ONLY way for agents)
+
+The TUI cannot be driven from a non-interactive shell: opentui stalls
+after the first frame under `expect`/`screen` ptys (its terminal
+capability queries — DSR, kitty keyboard, DECRQM — get no replies).
+Don't attempt it. Use the headless mode instead; it runs the real
+AgentClient with the exact config the TUI would use:
+
+    bun start --debug --debug-options panel        # probe data, no turn
+    bun start -p "reply with ok"                   # single turn, plain text out
+    bun start --debug --debug-options panel \
+      --resume <session-id> -p "..."               # probe any session state
+
+`--debug-options panel` prints what the /controlpanel sidebar renders as
+grep-friendly `panel.<field>: <value>` lines (session, context, MCP/LSP
+servers, todos, cwd:branch). `-p/--prompt` streams the turn as plain text
+(assistant text → stdout; tool names, errors, denied permissions →
+stderr) and exits non-zero if the turn errored. The two compose: prompt
+first, probes after. Add new probes in `src/debug/headless.ts`.
+
+Wire facts these flags encode (verified against SDK 0.3.207): the
+stream's `system/init` message does not arrive until the first user
+turn, but control requests (mcp_status, context usage) answer pre-turn;
+`resume` does NOT replay turns as events, so resumed state comes from
+the JSONL transcript (`readSessionHistory` + `seedTodoHistory`).
+
 ## Things NOT to do
 
 - Don't `console.log` from inside the TUI — corrupts the screen.
@@ -108,6 +134,22 @@ display. Always:
 - Don't drop the `--conditions=browser` flag from the `package.json`
   scripts or the launcher. Without it, Bun loads Solid's SSR build and
   everything breaks subtly.
+
+## Where non-SDK data lives
+
+The Agent SDK doesn't expose everything the CLI knows. Facts verified
+against live installs:
+
+- **LSP servers** are plugin-provided and invisible to the SDK (sdk.d.ts
+  has no LSP surface). Inventory chain: `~/.claude/settings.json
+  enabledPlugins` → `~/.claude/plugins/known_marketplaces.json
+  installLocation` → `<location>/.claude-plugin/marketplace.json
+  plugins[].lspServers` (no per-plugin plugin.json). Implemented in
+  `src/util/lsp.ts`; no runtime status exists, only configured+resolvable.
+- **Todos** arrive as TodoWrite (full-list replace) OR TaskCreate/
+  TaskUpdate (incremental; the task id is only in the tool RESULT text).
+  `src/util/todo-tracker.ts` folds both; resumed sessions seed it from
+  the JSONL transcript (`seedTodoHistory`).
 
 ## Quick links
 

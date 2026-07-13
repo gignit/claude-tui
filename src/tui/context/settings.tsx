@@ -43,6 +43,9 @@ export interface SettingsContextValue {
    */
   markdownLegacy: () => boolean
   setMarkdownLegacy: (on: boolean) => void
+  /** Show the right-hand control panel (session/context/MCP/todos). */
+  controlPanel: () => boolean
+  setControlPanel: (on: boolean) => void
 }
 
 const Ctx = createContext<SettingsContextValue | null>(null)
@@ -68,6 +71,9 @@ export function SettingsProvider(props: SettingsProviderProps) {
   )
   const [markdownLegacy, setMarkdownLegacySignal] = createSignal<boolean>(
     persisted.markdownLegacy ?? false,
+  )
+  const [controlPanel, setControlPanelSignal] = createSignal<boolean>(
+    persisted.controlPanel ?? false,
   )
 
   const value: SettingsContextValue = {
@@ -95,6 +101,12 @@ export function SettingsProvider(props: SettingsProviderProps) {
       setMarkdownLegacySignal(on)
       saveState({ markdownLegacy: on })
       dlog("settings.markdownLegacy", { value: on })
+    },
+    controlPanel,
+    setControlPanel: (on) => {
+      setControlPanelSignal(on)
+      saveState({ controlPanel: on })
+      dlog("settings.controlPanel", { value: on })
     },
   }
 

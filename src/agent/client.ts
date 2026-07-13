@@ -15,16 +15,27 @@
 import { statSync } from "node:fs"
 import { delimiter, join } from "node:path"
 import { homedir } from "node:os"
-import { query, type Query, type SDKMessage, type SDKUserMessage, type Options } from "@anthropic-ai/claude-agent-sdk"
+import {
+  getSessionInfo,
+  listSessions as sdkListSessions,
+  query,
+  renameSession as sdkRenameSession,
+  type Options,
+  type Query,
+  type SDKMessage,
+  type SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk"
 import type {
   AgentEvent,
   AskUserQuestionItem,
   DisplayItem,
   EffortLevel,
+  McpServerInfo,
   ModelChoice,
   PermissionRequest,
   QuestionRequest,
 } from "./types.ts"
+import { TodoTracker } from "../util/todo-tracker.ts"
 import {
   type AgentMode,
   type PermissionLevel,
@@ -63,6 +74,15 @@ export interface AgentClientConfig {
    * uuid). This is the conversation-rewind primitive.
    */
   resumeAt?: string
+  /**
+   * With `resume`: transcript items already parsed by the caller (the
+   * provider prefills its scrollback from the JSONL). The client folds
+   * their tool calls into its todo tracker — the SDK does not replay
+   * turns as events, and without this seed a live TaskUpdate against a
+   * pre-resume task id would not register. Emits one initial `todos`
+   * event when the seed yields a non-empty list.
+   */
+  seedTodoHistory?: DisplayItem[]
   /**
    * If you want to pre-approve tools and skip the permission UI entirely,
    * pass `permissionMode: "acceptEdits"` or `"bypassPermissions"`. Default
@@ -127,6 +147,57 @@ export function findClaudeExecutable(): string | undefined {
   if (isExecutable(fallback)) return fallback
 
   return undefined
+}
+
+/**
+ * Session-store helpers. These wrap the SDK's STANDALONE session
+ * functions (they read/write the local JSONL store directly — no
+ * running query needed) and keep SDK shapes confined to this file.
+ *
+ * Native title precedence, per SDKSessionInfo.summary: customTitle
+ * (set via renameSession or the CLI's auto-titling) → auto summary →
+ * first prompt. So every session with at least one turn has a title.
+ */
+
+export async function fetchSessionTitle(sessionId: string, cwd: string): Promise<string | null> {
+  try {
+    const info = await getSessionInfo(sessionId, { dir: cwd })
+    if (info) return info.customTitle ?? info.summary ?? null
+    // getSessionInfo is documented to return undefined for sessions with
+    // "no extractable summary" — fall back to the listing, which computes
+    // its own summaries, before giving up.
+    const rows = await sdkListSessions({ dir: cwd })
+    const row = rows.find((r) => r.sessionId === sessionId)
+    return row?.customTitle ?? row?.summary ?? null
+  } catch (err) {
+    dlog("agent.sessionInfo.error", { message: err instanceof Error ? err.message : String(err) })
+    return null
+  }
+}
+
+export async function renameSessionTitle(sessionId: string, title: string, cwd: string): Promise<void> {
+  await sdkRenameSession(sessionId, title, { dir: cwd })
+}
+
+/** Display-layer session row for the /sessions picker. */
+export interface SessionListRow {
+  id: string
+  /** Native display title: customTitle → auto summary → first prompt. */
+  title: string
+  /** Last-modified ms — the picker sorts and shows recency from this. */
+  mtimeMs: number
+}
+
+export async function listSessionSummaries(cwd: string): Promise<SessionListRow[]> {
+  try {
+    const sessions = await sdkListSessions({ dir: cwd })
+    return sessions
+      .map((s) => ({ id: s.sessionId, title: s.summary, mtimeMs: s.lastModified }))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)
+  } catch (err) {
+    dlog("agent.listSessions.error", { message: err instanceof Error ? err.message : String(err) })
+    return []
+  }
 }
 
 /** Async iterator over user messages, fed by `submitUserMessage()`. */
@@ -196,6 +267,18 @@ export interface AgentClient {
    * Returns a human-readable outcome; never throws.
    */
   rewindFiles(userMessageUuid: string): Promise<{ ok: boolean; summary: string }>
+  /**
+   * Fetch the current status of every configured MCP server (connected /
+   * failed / needs-auth / pending / disabled). Returns [] on error —
+   * the control panel treats that the same as "no servers".
+   */
+  listMcpServers(): Promise<McpServerInfo[]>
+  /**
+   * Pull the latest context usage from the SDK; the result arrives as a
+   * 'context' AgentEvent (same path as the automatic post-turn refresh).
+   * Never throws.
+   */
+  refreshContext(): Promise<void>
   /** Resolves once the underlying query iterator finishes (e.g. on close). */
   done: Promise<void>
 }
@@ -203,6 +286,19 @@ export interface AgentClient {
 export function createAgentClient(config: AgentClientConfig): AgentClient {
   const channel = new UserInputChannel()
   const emit = config.onEvent
+
+  // Last session title we emitted, so repeat hook deliveries (the title
+  // rides on EVERY UserPromptSubmit) don't spam identical events.
+  let lastTitle: string | null = null
+  const captureSessionTitle = async (input: unknown) => {
+    const title = (input as { session_title?: string }).session_title
+    if (title && title !== lastTitle) {
+      lastTitle = title
+      emit({ type: "title", title })
+      dlog("agent.title", { title })
+    }
+    return { continue: true as const }
+  }
 
   /**
    * In streaming-input mode the SDK requires us to pass an AsyncIterable
@@ -256,6 +352,15 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
     ...(config.allowedTools && config.allowedTools.length > 0
       ? { allowedTools: config.allowedTools }
       : {}),
+    // The session title is not on any regular stream message — the SDK
+    // only exposes it on hook inputs. SessionStart carries it on resume
+    // (and after the CLI auto-generates one); UserPromptSubmit carries it
+    // on every turn, which also catches mid-session retitles. Both hooks
+    // are observe-only and must never block the loop.
+    hooks: {
+      SessionStart: [{ hooks: [captureSessionTitle] }],
+      UserPromptSubmit: [{ hooks: [captureSessionTitle] }],
+    },
     canUseTool: async (toolName, input, opts) => {
       // Special-case the built-in AskUserQuestion tool. The Claude
       // binary normally renders a TUI picker for this, but when the
@@ -366,6 +471,20 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
   let streamingTurnModel: string | undefined
   // Map SDK toolUseID → display tool_call id, so result events can find their call.
   const toolCallByUseId = new Map<string, string>()
+  // Map SDK toolUseID → tool name + parsed input, so tool_result events can
+  // feed the todo tracker (TaskCreate's id only exists in the result text).
+  const toolMetaByUseId = new Map<string, { name: string; input: Record<string, unknown> }>()
+  // Running todo state across TodoWrite AND TaskCreate/TaskUpdate calls.
+  const todoTracker = new TodoTracker()
+  if (config.seedTodoHistory) {
+    let seeded = false
+    for (const item of config.seedTodoHistory) {
+      if (item.kind === "tool_call") {
+        seeded = todoTracker.applyToolCall(item.toolName, item.input, item.result) || seeded
+      }
+    }
+    if (seeded) emit({ type: "todos", todos: todoTracker.todos() })
+  }
   // Best-effort cache of the current agent mode. Updated on:
   //   (1) the SDK's init system message (initial value),
   //   (2) every `setMode()` call we issue,
@@ -543,6 +662,15 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
             // mid-conversation without the user toggling Tab.
             detectModeSwitchTool(block.name)
             const parsedInput = (block.input ?? {}) as Record<string, unknown>
+            // Feed the todo tracker. Only the canonical event has parsed
+            // input (the streamed tool_use block arrives with input {}).
+            // TodoWrite applies immediately; TaskCreate/TaskUpdate wait
+            // for their tool_result (via toolMetaByUseId) because the
+            // task id only exists in the result text.
+            toolMetaByUseId.set(block.id, { name: block.name, input: parsedInput })
+            if (todoTracker.applyToolCall(block.name, parsedInput)) {
+              emit({ type: "todos", todos: todoTracker.todos() })
+            }
             const streamedToolId = toolCallByUseId.get(block.id)
             if (streamedToolId) {
               // Tool item was appended during streaming with empty
@@ -599,6 +727,12 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
                 id: callId,
                 patch: { resolved: true, result } as Partial<DisplayItem>,
               })
+            }
+            // Task tools mutate the todo list only once their result
+            // confirms success (and carries the new task's id).
+            const meta = toolMetaByUseId.get(block.tool_use_id)
+            if (meta && todoTracker.applyToolCall(meta.name, meta.input, result)) {
+              emit({ type: "todos", todos: todoTracker.todos() })
             }
             // If we never saw the matching call (orphan result, very
             // rare — e.g. a result for a call from a prior session that
@@ -1059,6 +1193,25 @@ export function createAgentClient(config: AgentClientConfig): AgentClient {
             text: `listModels failed: ${err instanceof Error ? err.message : String(err)}`,
             createdAt: Date.now(),
           },
+        })
+        return []
+      }
+    },
+    refreshContext: () => refreshContextUsage(),
+    async listMcpServers() {
+      try {
+        const statuses = await q.mcpServerStatus()
+        return statuses.map((s): McpServerInfo => ({
+          name: s.name,
+          status: s.status,
+          ...(s.tools ? { toolCount: s.tools.length } : {}),
+          ...(s.scope ? { scope: s.scope } : {}),
+          ...(s.error ? { error: s.error } : {}),
+        }))
+      } catch (err) {
+        // Pre-init or transport errors — the panel shows an empty list.
+        dlog("agent.mcp.status.error", {
+          message: err instanceof Error ? err.message : String(err),
         })
         return []
       }

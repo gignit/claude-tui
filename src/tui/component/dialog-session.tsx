@@ -12,9 +12,9 @@ import { useDialog } from "../context/dialog.tsx"
 import { useAgent } from "../context/agent.tsx"
 import { useTheme } from "../context/theme.tsx"
 import { DialogSelect, type DialogSelectOption } from "./dialog-select.tsx"
-import { listSessions, type SessionSummary } from "../../util/sessions.ts"
+import { listSessionSummaries, type SessionListRow } from "../../agent/client.ts"
 
-// Max characters for the preview line shown as the row title. The dialog
+// Max characters for the title line shown as the row title. The dialog
 // box is ~80 wide minus 8 chars of padding/indentation, so 64 keeps the
 // title safely on one line in any terminal that fits the dialog at all.
 const PREVIEW_MAX = 64
@@ -28,19 +28,20 @@ export function DialogSessionList() {
   const dialog = useDialog()
   const agent = useAgent()
   const theme = useTheme()
-  const [sessions] = createResource(() => listSessions(agent.cwd()))
+  const [sessions] = createResource(() => listSessionSummaries(agent.cwd()))
 
   const options = (): DialogSelectOption<string>[] => {
-    const list: SessionSummary[] = sessions() ?? []
+    const list: SessionListRow[] = sessions() ?? []
     return list.map((s) => ({
       value: s.id,
-      // Previews are first-user-message text and frequently very long.
-      // Hard-truncate so each row stays exactly one line.
-      title: truncate(s.preview || "(no preview)", PREVIEW_MAX),
-      // The list is sorted by last activity (file mtime, newest first)
-      // — show that same timestamp so the ordering reads as intended.
-      // Showing the first-message time here made a fresh update to an
-      // old session look out of place.
+      // Native display title (custom title → auto summary → first
+      // prompt) — can still be long; hard-truncate so each row stays
+      // exactly one line.
+      title: truncate(s.title || "(no title)", PREVIEW_MAX),
+      // The list is sorted by last activity (newest first) — show that
+      // same timestamp so the ordering reads as intended. Showing the
+      // first-message time here made a fresh update to an old session
+      // look out of place.
       subtitle: shortId(s.id) + "  updated " + relativeTimeMs(s.mtimeMs),
       hint: s.id === agent.sessionId() ? "active" : "",
     }))

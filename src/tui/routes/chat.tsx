@@ -33,6 +33,7 @@ import { useSettings } from "../context/settings.tsx"
 import { MessageView } from "../component/message.tsx"
 import { Prompt } from "../component/prompt.tsx"
 import { StatusLine } from "../component/status-line.tsx"
+import { ControlPanel } from "../component/control-panel.tsx"
 import { DialogQuestion } from "../component/dialog-question.tsx"
 import { dlog } from "../../util/debug-log.ts"
 import { copyToClipboard } from "../../util/clipboard.ts"
@@ -222,6 +223,12 @@ export function Chat() {
           <StatusLine />
         </box>
       </box>
+
+      {/* Control panel sidebar (/controlpanel). Hidden on terminals too
+          narrow to fit a useful chat column beside it. */}
+      <Show when={settings.controlPanel() && dimensions().width >= 80}>
+        <ControlPanel />
+      </Show>
     </box>
   )
 }

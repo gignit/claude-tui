@@ -14,15 +14,23 @@
 
 import { createContext, useContext, createSignal, onCleanup, type JSX } from "solid-js"
 import { createStore, produce } from "solid-js/store"
-import { createAgentClient, type AgentClient, type AgentClientConfig } from "../../agent/client.ts"
+import {
+  createAgentClient,
+  fetchSessionTitle,
+  renameSessionTitle,
+  type AgentClient,
+  type AgentClientConfig,
+} from "../../agent/client.ts"
 import type {
   AgentStatus,
   ContextUsage,
   DisplayItem,
   EffortLevel,
+  McpServerInfo,
   ModelChoice,
   PermissionRequest,
   QuestionRequest,
+  TodoItem,
 } from "../../agent/types.ts"
 import { type AgentMode, type PermissionLevel, levelFromSdk, levelToSdk, nextMode } from "../../agent/modes.ts"
 import { saveState } from "../../util/state-store.ts"
@@ -55,6 +63,21 @@ export interface AgentContextValue {
   cwd: () => string
   /** Latest context-usage snapshot from the SDK; null until first refresh. */
   contextUsage: () => ContextUsage | null
+  /** Session title from the CLI (auto-generated or user-set), or null until known. */
+  sessionTitle: () => string | null
+  /**
+   * Re-read the title from the session store (customTitle → summary →
+   * first prompt). Hook-delivered titles overwrite it when they arrive.
+   */
+  refreshSessionTitle: () => Promise<void>
+  /** Set a custom title for the current session (/rename). Persists in the store. */
+  renameCurrentSession: (title: string) => Promise<void>
+  /** Latest full TodoWrite checklist; [] when the agent has no todo list. */
+  todos: () => TodoItem[]
+  /** Last-fetched MCP server statuses; call refreshMcpServers() to update. */
+  mcpServers: () => McpServerInfo[]
+  /** Re-fetch MCP server statuses from the SDK into the mcpServers signal. */
+  refreshMcpServers: () => Promise<void>
   submit: (text: string) => void
   interrupt: () => Promise<void>
   setModel: (model: string) => Promise<void>
@@ -95,6 +118,12 @@ const AgentContext = createContext<AgentContextValue | null>(null)
 export interface AgentProviderProps {
   children: JSX.Element
   config: Omit<AgentClientConfig, "onEvent" | "onPermissionRequest" | "onQuestionRequest">
+  /**
+   * Resume this session id at launch (--resume). Same path as the
+   * /sessions dialog: scrollback prefills from the JSONL transcript,
+   * then the client spawns with `resume`.
+   */
+  initialResume?: string
 }
 
 export function AgentProvider(props: AgentProviderProps) {
@@ -113,6 +142,9 @@ export function AgentProvider(props: AgentProviderProps) {
   )
   const [sessionId, setSessionIdSignal] = createSignal<string | null>(null)
   const [contextUsage, setContextUsageSignal] = createSignal<ContextUsage | null>(null)
+  const [sessionTitle, setSessionTitleSignal] = createSignal<string | null>(null)
+  const [todos, setTodosSignal] = createSignal<TodoItem[]>([])
+  const [mcpServers, setMcpServersSignal] = createSignal<McpServerInfo[]>([])
 
   // Mutable reference: closed methods (submit/interrupt/setModel/etc.)
   // dereference via `client?.x()` at call time, so swapping the binding
@@ -135,6 +167,12 @@ export function AgentProvider(props: AgentProviderProps) {
     setPendingQuestion(null)
     setSessionIdSignal(null)
     setContextUsageSignal(null)
+    // Title/todos belong to the outgoing session. A resume replays its
+    // TodoWrite calls (repopulating todos) and re-delivers the title via
+    // the SessionStart hook; a fresh session correctly starts empty.
+    setSessionTitleSignal(null)
+    setTodosSignal([])
+    setMcpServersSignal([])
     // Keep model/mode signals as-is; they get overwritten by the next
     // init event anyway and showing "connecting…" briefly is fine.
 
@@ -207,14 +245,17 @@ export function AgentProvider(props: AgentProviderProps) {
           case "context":
             setContextUsageSignal(evt.usage)
             break
+          case "todos":
+            setTodosSignal(evt.todos)
+            break
+          case "title":
+            setSessionTitleSignal(evt.title)
+            break
         }
       },
     }
     client = createAgentClient(config)
   }
-
-  // Initial client.
-  startClient({})
 
   onCleanup(() => {
     dlog("agent.provider.cleanup", { stack: new Error().stack?.split("\n").slice(1, 6).join(" | ") })
@@ -241,6 +282,25 @@ export function AgentProvider(props: AgentProviderProps) {
     },
     sessionId,
     contextUsage,
+    sessionTitle,
+    refreshSessionTitle: async () => {
+      const id = sessionId()
+      if (!id) return
+      const title = await fetchSessionTitle(id, props.config.cwd ?? process.cwd())
+      if (title) setSessionTitleSignal(title)
+    },
+    renameCurrentSession: async (title) => {
+      const id = sessionId()
+      if (!id) throw new Error("no active session yet — send a message first")
+      await renameSessionTitle(id, title, props.config.cwd ?? process.cwd())
+      setSessionTitleSignal(title)
+    },
+    todos,
+    mcpServers,
+    refreshMcpServers: async () => {
+      const list = client ? await client.listMcpServers() : []
+      setMcpServersSignal(list)
+    },
     cwd: () => props.config.cwd ?? process.cwd(),
     submit: (text) => client?.submitUserMessage(text),
     interrupt: async () => {
@@ -279,7 +339,7 @@ export function AgentProvider(props: AgentProviderProps) {
           error: err instanceof Error ? err.message : String(err),
         })
       }
-      startClient({ resume: id })
+      startClient({ resume: id, ...(history.length > 0 ? { seedTodoHistory: history } : {}) })
       // Seed the session id immediately — resuming keeps the same id,
       // and waiting for the SDK's init event (which may not arrive
       // until the first turn) left /rewind and /fork refusing with
@@ -289,7 +349,9 @@ export function AgentProvider(props: AgentProviderProps) {
       setSessionIdSignal(id)
       // startClient already cleared the items store; refill with the
       // historical items we just parsed. The next live event from the
-      // resumed subprocess will append after these.
+      // resumed subprocess will append after these. (The todo list is
+      // seeded inside the client via seedTodoHistory — the SDK does not
+      // replay turns as events.)
       if (history.length > 0) {
         setItems(produce((arr) => {
           for (const item of history) arr.push(item)
@@ -309,7 +371,11 @@ export function AgentProvider(props: AgentProviderProps) {
       } catch {
         /* fork still works without visual history */
       }
-      startClient({ resume: id, fork: true })
+      startClient({
+        resume: id,
+        fork: true,
+        ...(history.length > 0 ? { seedTodoHistory: history } : {}),
+      })
       if (history.length > 0) {
         setItems(produce((arr) => {
           for (const item of history) arr.push(item)
@@ -343,7 +409,11 @@ export function AgentProvider(props: AgentProviderProps) {
       } catch {
         /* scrollback prefill is cosmetic; the resume itself is what matters */
       }
-      startClient({ resume: id, resumeAt: point.anchorUuid })
+      startClient({
+        resume: id,
+        resumeAt: point.anchorUuid,
+        ...(history.length > 0 ? { seedTodoHistory: history } : {}),
+      })
       // Same optimistic seed as resumeSession — rewinding continues the
       // same session id, and a follow-up /rewind or /fork shouldn't have
       // to wait for the init event.
@@ -370,6 +440,15 @@ export function AgentProvider(props: AgentProviderProps) {
         createdAt: Date.now(),
       })))
     },
+  }
+
+  // Initial client. With --resume, reuse the full resumeSession path so
+  // the scrollback (and todo list) prefill from the JSONL transcript
+  // exactly as the /sessions dialog would.
+  if (props.initialResume) {
+    void value.resumeSession(props.initialResume)
+  } else {
+    startClient({})
   }
 
   return <AgentContext.Provider value={value}>{props.children}</AgentContext.Provider>

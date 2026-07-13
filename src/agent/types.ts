@@ -141,6 +141,30 @@ export interface ModelChoice {
   supportedEffortLevels?: EffortLevel[]
 }
 
+/**
+ * One entry of the agent's TodoWrite checklist. Mirrors the SDK's
+ * TodoWriteInput.todos element (see sdk-tools.d.ts) as a display-layer
+ * copy — same policy as EffortLevel above.
+ */
+export interface TodoItem {
+  content: string
+  status: "pending" | "in_progress" | "completed"
+  /** Present-continuous label shown while status is in_progress. */
+  activeForm: string
+}
+
+/** Display-layer slice of the SDK's McpServerStatus. */
+export interface McpServerInfo {
+  name: string
+  status: "connected" | "failed" | "needs-auth" | "pending" | "disabled"
+  /** Number of tools the server exposes (undefined until connected). */
+  toolCount?: number
+  /** Config scope reported by the CLI (user / project / local / …). */
+  scope?: string
+  /** Error message when status is "failed". */
+  error?: string
+}
+
 /** High-level events the agent client emits to the TUI. */
 export type AgentEvent =
   | { type: "appended"; item: DisplayItem }
@@ -154,6 +178,10 @@ export type AgentEvent =
   | { type: "permissionLevel"; level: import("./modes.ts").PermissionLevel }
   | { type: "session"; sessionId: string }
   | { type: "context"; usage: ContextUsage }
+  /** Latest full TodoWrite checklist (REPLACE semantics — swap, don't merge). */
+  | { type: "todos"; todos: TodoItem[] }
+  /** Session title, captured from SessionStart/UserPromptSubmit hook inputs. */
+  | { type: "title"; title: string }
 
 export type AgentStatus =
   | { kind: "idle" }

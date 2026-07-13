@@ -28,6 +28,8 @@ export interface RunOptions {
   pathToClaudeCodeExecutable?: string
   /** Optional override for mouse-wheel scroll speed (lines per tick). */
   scrollSpeed?: number
+  /** Resume this session id at launch (--resume). */
+  resume?: string
 }
 
 export async function runTui(opts: RunOptions): Promise<void> {
@@ -39,6 +41,7 @@ export async function runTui(opts: RunOptions): Promise<void> {
             <ExpandProvider>
               <SettingsProvider initialScrollSpeed={opts.scrollSpeed}>
                 <AgentProvider
+                  {...(opts.resume ? { initialResume: opts.resume } : {})}
                   config={{
                     cwd: opts.cwd,
                     ...(opts.model ? { model: opts.model } : {}),
