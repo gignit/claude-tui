@@ -122,7 +122,10 @@ the JSONL transcript (`readSessionHistory` + `seedTodoHistory`).
 - Don't add `pathToClaudeCodeExecutable` defaults that hardcode Anthropic
   binary paths — use the auto-detect helper.
 - Don't pass `model:` to `query()` unless the user explicitly chose one.
-  An undefined model means "use the user's `claude` default".
+  An undefined model means "use the user's `claude` default". Never pass
+  the literal "default" — spawning with any explicit --model (except
+  fable itself) makes the CLI hide opt-in models like fable from
+  supportedModels, silently shrinking the /models picker.
 - Don't bottom-pin the scrollbox via `contentOptions: { minHeight }`. We
   tried, it broke. Top-stack + `stickyStart="bottom"` is correct.
 - Don't put more than `Enter` and one `newline` binding on the textarea

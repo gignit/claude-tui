@@ -193,7 +193,12 @@ async function main() {
     )
   }
   const persisted = loadState()
-  const model = args.model ?? persisted.model // undefined → SDK uses claude's default
+  // undefined → SDK uses claude's default. "default" is normalized to
+  // undefined: it's the picker's no-override row, and passing it as an
+  // explicit --model makes the CLI hide opt-in models (fable) from
+  // supportedModels. Also migrates state.json files that stored it.
+  const rawModel = args.model ?? persisted.model
+  const model = rawModel === "default" ? undefined : rawModel
   // Only forward a persisted effort if it's still a valid level — the
   // union may change across versions and a stale value would error the
   // whole query() spawn.

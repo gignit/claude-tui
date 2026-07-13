@@ -17,8 +17,11 @@
  *
  * Probes:
  *   panel   Everything the /controlpanel sidebar renders: session id +
- *           title, context usage, MCP servers (with the LSP-like split),
- *           todos, and the cwd:branch footer.
+ *           title, context usage, MCP servers, LSP servers, todos, and
+ *           the cwd:branch footer.
+ *   models  Every model the SDK reports for this account — what the
+ *           /models picker shows (id, display name, resolved id,
+ *           supported effort levels).
  *
  * Probe output is `panel.<field>: <value>` lines — stable enough to grep in
  * a verification script, human-readable enough to eyeball.
@@ -38,7 +41,7 @@ import { currentGitBranch } from "../util/git.ts"
 import { listLspServers } from "../util/lsp.ts"
 import { readSessionHistory } from "../util/sessions.ts"
 
-const PROBES = ["panel"] as const
+const PROBES = ["panel", "models"] as const
 type Probe = (typeof PROBES)[number]
 
 /** Cap on a --prompt turn; generous because real turns run tools. */
@@ -170,6 +173,17 @@ export async function runHeadlessDebug(
   }
 
   for (const probe of probes as Probe[]) {
+    if (probe === "models") {
+      const models = await withTimeout(client.listModels(), FETCH_TIMEOUT_MS, [])
+      out(`models.count: ${models.length}`)
+      for (const m of models) {
+        out(
+          `models.entry: ${m.id} — ${m.displayName}` +
+            `${m.resolvedModel ? ` -> ${m.resolvedModel}` : ""}` +
+            `${m.supportedEffortLevels?.length ? ` [${m.supportedEffortLevels.join(",")}]` : ""}`,
+        )
+      }
+    }
     if (probe === "panel") {
       let servers = await withTimeout(client.listMcpServers(), FETCH_TIMEOUT_MS, [])
       // Right after spawn every server reports "pending" while it

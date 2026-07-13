@@ -74,12 +74,38 @@ function buildSpecs(deps: BuiltinDeps): CommandSpec[] {
     {
       value: "model.list",
       title: "Switch model",
-      description: "Pick from your account's available models",
+      description: "Pick from your account's available models, or /model <id|alias> to set directly",
       category: "Agent",
       slash: { name: "models", aliases: ["model"] },
       opensDialog: true,
-      onSelect: () => {
-        dialog.push(() => <DialogModelList />, { title: "Switch model" })
+      onSelect: (args) => {
+        const wanted = (args ?? "").trim()
+        if (!wanted) {
+          dialog.push(() => <DialogModelList />, { title: "Switch model" })
+          return
+        }
+        // `/model fable` parity with the claude CLI: match the arg
+        // against the supported list (id, resolved id, display name,
+        // case-insensitive), and fall through to the raw string for
+        // anything the list doesn't carry — the CLI accepts arbitrary
+        // ids/aliases (e.g. claude-opus-4-7) and errors if invalid.
+        dialog.clear()
+        void agent.listModels().then(async (models) => {
+          const needle = wanted.toLowerCase()
+          const match = models.find(
+            (m) =>
+              m.id.toLowerCase() === needle ||
+              m.resolvedModel?.toLowerCase() === needle ||
+              m.displayName.toLowerCase() === needle,
+          )
+          const id = match?.id ?? wanted
+          await agent.setModel(id)
+          agent.pushNotice(
+            match
+              ? `/model: ${match.displayName} (${match.resolvedModel ?? match.id})`
+              : `/model: ${wanted} (not in the model list — passed through as-is)`,
+          )
+        })
       },
     },
     {

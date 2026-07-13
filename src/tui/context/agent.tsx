@@ -307,8 +307,17 @@ export function AgentProvider(props: AgentProviderProps) {
       await client?.interrupt()
     },
     setModel: async (next) => {
-      await client?.setModel(next)
-      saveState({ model: next })
+      // "default" is the CLI's no-override row, not a model id. Spawning
+      // with an explicit --model (even "default") makes the CLI hide
+      // opt-in models like fable from supportedModels — so picking
+      // Default clears the override entirely instead of pinning it.
+      if (next === "default") {
+        await client?.setModel(undefined)
+        saveState({ model: undefined })
+      } else {
+        await client?.setModel(next)
+        saveState({ model: next })
+      }
     },
     setEffort: async (next) => {
       await client?.setEffort(next)
